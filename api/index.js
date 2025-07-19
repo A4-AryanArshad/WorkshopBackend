@@ -12,6 +12,7 @@ const app = express();
 app.use(express.json());
 app.use(cors({
   origin: 'https://workshopfrontend-one.vercel.app', // or your frontend URL
+  
   credentials: true
 }));
 
