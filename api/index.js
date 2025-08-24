@@ -1,4 +1,3 @@
-
 const express = require('express');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
@@ -11,6 +10,15 @@ const fetch = require('node-fetch');
 const cloudinary = require('cloudinary').v2;
 const stripe = require('stripe')('sk_test_51Rj1dnBOoulucdCvbGDz4brJYHztkuL80jGSKcnQNT46g9P58pbxY36Lg3yWyMDb6Gwgv5Rr3NDfjvB2HyaDlJP7006wnXEtp1');
 const nodemailer = require('nodemailer');
+
+// Try to fix DNS resolution issues
+const dns = require('dns');
+try {
+  dns.setDefaultResultOrder('ipv4first');
+} catch (error) {
+  // Fallback for older Node.js versions
+  console.log('⚠️  Using default DNS resolution order');
+}
 
 // Email configuration
 const transporter = nodemailer.createTransport({
@@ -362,12 +370,83 @@ app.use(cors({
 
 app.use(express.json());
 
-// MongoDB connection
-mongoose.connect(
- 'mongodb+srv://aryan:2021cs613@cluster0.xkuanbt.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0',
-  { useNewUrlParser: true, useUnifiedTopology: true }
-).then(() => console.log('MongoDB connected'))
- .catch(err => console.log(err));
+// MongoDB Connection String - Try multiple options with better DNS handling
+const mongoOptions = [
+  process.env.MONGODB_URI || "mongodb+srv://aryan:2021cs613@cluster0.xkuanbt.mongodb.net/mechanics?retryWrites=true&w=majority&directConnection=false",
+  "mongodb://aryan:2021cs613@cluster0-shard-00-00.xkuanbt.mongodb.net:27017,cluster0-shard-00-01.xkuanbt.mongodb.net:27017,cluster0-shard-00-02.xkuanbt.mongodb.net:27017/mechanics?ssl=true&replicaSet=atlas-yh1s3n-shard-0&authSource=admin&retryWrites=true&w=majority&directConnection=false",
+  "mongodb+srv://aryan:2021cs613@cluster0.xkuanbt.mongodb.net/mechanics?retryWrites=true&w=majority&directConnection=false&serverSelectionTimeoutMS=30000"
+];
+
+let currentUriIndex = 0;
+const uri = mongoOptions[currentUriIndex];
+
+// MongoDB Connection with retry logic and DNS handling
+const connectWithRetry = async () => {
+  try {
+    console.log(`🔄 Attempting to connect to MongoDB (option ${currentUriIndex + 1}/${mongoOptions.length})...`);
+    
+    // For Atlas connections, try to resolve DNS first
+    if (currentUriIndex < 3) { // First 3 are Atlas connections
+      const hostname = mongoOptions[currentUriIndex].includes('mongodb+srv://') 
+        ? 'cluster0.xkuanbt.mongodb.net'
+        : 'cluster0-shard-00-00.xkuanbt.mongodb.net';
+      
+      try {
+        const { lookup } = require('dns').promises;
+        await lookup(hostname);
+        console.log(`✅ DNS resolution successful for ${hostname}`);
+      } catch (dnsError) {
+        console.log(`⚠️  DNS resolution failed for ${hostname}, trying alternative DNS...`);
+        // Try with Google DNS
+        process.env.DNS_SERVERS = '8.8.8.8,8.8.4.4';
+      }
+    }
+    
+    await mongoose.connect(mongoOptions[currentUriIndex], {
+      serverSelectionTimeoutMS: 30000,
+      socketTimeoutMS: 45000,
+      maxPoolSize: 10,
+      minPoolSize: 1,
+      maxIdleTimeMS: 30000,
+      connectTimeoutMS: 30000
+    });
+    
+    console.log('✅ Connected to MongoDB successfully!');
+    
+    // Start server only after successful connection
+    app.listen(PORT, () => {
+      console.log(`🚀 Server is running on port ${PORT}`);
+      console.log(`🌐 Server URL: http://localhost:${PORT}`);
+    });
+    
+  } catch (err) {
+    console.error(`❌ MongoDB connection failed with option ${currentUriIndex + 1}:`, err.message);
+    
+    // Try next connection option
+    currentUriIndex++;
+    
+    if (currentUriIndex < mongoOptions.length) {
+      console.log(`🔄 Trying next connection option in 3 seconds...`);
+      setTimeout(connectWithRetry, 3000);
+    } else {
+      console.log('❌ All MongoDB connection options failed!');
+      console.log('💡 Troubleshooting tips:');
+      console.log('1. Check your internet connection');
+      console.log('2. Verify MongoDB Atlas is accessible');
+      console.log('3. Try using a different DNS server (like 8.8.8.8)');
+      console.log('4. Check if your IP is whitelisted in MongoDB Atlas');
+      
+      // Start server anyway for development (without database)
+      app.listen(PORT, () => {
+        console.log(`🚀 Server is running on port ${PORT} (NO DATABASE)`);
+        console.log(`⚠️  Note: Database features will not work!`);
+      });
+    }
+  }
+};
+
+// Start connection process
+connectWithRetry();
 
 // User schema
 const userSchema = new mongoose.Schema({
@@ -4351,5 +4430,5 @@ app.get('/api/test-message-system', async (req, res) => {
   }
 });
 
+// Server will be started after successful MongoDB connection
 const PORT = process.env.PORT || 5001;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
