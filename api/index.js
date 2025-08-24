@@ -1,11 +1,11 @@
-require('dotenv').config();
+
 const express = require('express');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const multer = require('multer');
-const { storage } = require('./cloudinaryConfig');
+const { storage } = require('../cloudinaryConfig');
 const upload = multer({ storage });
 const fetch = require('node-fetch');
 const cloudinary = require('cloudinary').v2;
@@ -343,15 +343,28 @@ const sendBookingConfirmationEmail = async (userEmail, userName, carDetails, ser
 };
 
 const app = express();
-app.use(express.json());
+
+// Simplified CORS configuration for deployment and testing
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://127.0.0.1:3000'],
-  credentials: true
+  origin: true, // Allow all origins for now (you can restrict this later)
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization', 
+    'X-Requested-With',
+    'Accept',
+    'Origin'
+  ]
 }));
+
+// CORS will handle preflight requests automatically
+
+app.use(express.json());
 
 // MongoDB connection
 mongoose.connect(
-  process.env.MONGODB_URI || 'mongodb://localhost:27017/mechanics',
+ 'mongodb+srv://aryan:2021cs613@cluster0.xkuanbt.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0',
   { useNewUrlParser: true, useUnifiedTopology: true }
 ).then(() => console.log('MongoDB connected'))
  .catch(err => console.log(err));
@@ -2374,6 +2387,16 @@ app.post('/api/cleanup-duplicates', async (req, res) => {
     console.error('❌ Cleanup error:', error);
     res.status(500).json({ error: 'Failed to cleanup duplicates', details: error.message });
   }
+});
+
+// CORS test endpoint
+app.get('/api/cors-test', (req, res) => {
+  res.json({ 
+    message: 'CORS is working!',
+    timestamp: new Date().toISOString(),
+    origin: req.headers.origin || 'No origin header',
+    userAgent: req.headers['user-agent'] || 'No user agent'
+  });
 });
 
 // Simple health check endpoint
