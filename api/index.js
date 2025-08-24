@@ -352,9 +352,12 @@ const sendBookingConfirmationEmail = async (userEmail, userName, carDetails, ser
 
 const app = express();
 
-// Simplified CORS configuration for deployment and testing
+// CORS configuration for production deployment
 app.use(cors({
-  origin: true, // Allow all origins for now (you can restrict this later)
+  origin: [
+    'https://workshopfrontend-one.vercel.app',
+    'http://localhost:3000' // Keep localhost for development
+  ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: [
