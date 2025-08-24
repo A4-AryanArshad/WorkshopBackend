@@ -4432,3 +4432,6 @@ app.get('/api/test-message-system', async (req, res) => {
 
 // Server will be started after successful MongoDB connection
 const PORT = process.env.PORT || 5001;
+
+// Export for Vercel deployment
+module.exports = app;
