@@ -372,9 +372,7 @@ app.use(express.json());
 
 // MongoDB Connection String - Try multiple options with better DNS handling
 const mongoOptions = [
-  process.env.MONGODB_URI || "mongodb+srv://aryan:2021cs613@cluster0.xkuanbt.mongodb.net/mechanics?retryWrites=true&w=majority&directConnection=false",
-  "mongodb://aryan:2021cs613@cluster0-shard-00-00.xkuanbt.mongodb.net:27017,cluster0-shard-00-01.xkuanbt.mongodb.net:27017,cluster0-shard-00-02.xkuanbt.mongodb.net:27017/mechanics?ssl=true&replicaSet=atlas-yh1s3n-shard-0&authSource=admin&retryWrites=true&w=majority&directConnection=false",
-  "mongodb+srv://aryan:2021cs613@cluster0.xkuanbt.mongodb.net/mechanics?retryWrites=true&w=majority&directConnection=false&serverSelectionTimeoutMS=30000"
+  process.env.MONGODB_URI ||"mongodb+srv://aryan:2021cs613@cluster0.o8bu9nt.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 ];
 
 let currentUriIndex = 0;
