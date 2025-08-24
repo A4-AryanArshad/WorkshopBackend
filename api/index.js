@@ -11,14 +11,22 @@ const cloudinary = require('cloudinary').v2;
 const stripe = require('stripe')('sk_test_51Rj1dnBOoulucdCvbGDz4brJYHztkuL80jGSKcnQNT46g9P58pbxY36Lg3yWyMDb6Gwgv5Rr3NDfjvB2HyaDlJP7006wnXEtp1');
 const nodemailer = require('nodemailer');
 
-// Try to fix DNS resolution issues
+// Load environment variables
+require('dotenv').config();
+
+// Server configuration
+const PORT = process.env.PORT || 5001;
+
+// DNS Configuration - Prioritize IPv4 connections
 const dns = require('dns');
 try {
   dns.setDefaultResultOrder('ipv4first');
+  console.log('✅ DNS configured to prioritize IPv4 connections');
 } catch (error) {
-  // Fallback for older Node.js versions
-  console.log('⚠️  Using default DNS resolution order');
+  console.log('⚠️ DNS configuration failed (Node.js version compatibility):', error.message);
 }
+
+
 
 // Email configuration
 const transporter = nodemailer.createTransport({
@@ -373,81 +381,133 @@ app.use(cors({
 
 app.use(express.json());
 
-// MongoDB Connection String - Try multiple options with better DNS handling
-const mongoOptions = [
-  process.env.MONGODB_URI ||"mongodb+srv://aryan:2021cs613@cluster0.o8bu9nt.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-];
+// MongoDB Connection String
+const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/mechanics"
 
-let currentUriIndex = 0;
-const uri = mongoOptions[currentUriIndex];
+console.log('🔌 Attempting to connect to MongoDB...');
+console.log('🔌 Connection string:', MONGODB_URI.replace(/\/\/[^:]+:[^@]+@/, '//***:***@')); // Hide credentials in logs
 
-// MongoDB Connection with retry logic and DNS handling
-const connectWithRetry = async () => {
-  try {
-    console.log(`🔄 Attempting to connect to MongoDB (option ${currentUriIndex + 1}/${mongoOptions.length})...`);
-    
-    // For Atlas connections, try to resolve DNS first
-    if (currentUriIndex < 3) { // First 3 are Atlas connections
-      const hostname = mongoOptions[currentUriIndex].includes('mongodb+srv://') 
-        ? 'cluster0.xkuanbt.mongodb.net'
-        : 'cluster0-shard-00-00.xkuanbt.mongodb.net';
-      
-      try {
-        const { lookup } = require('dns').promises;
-        await lookup(hostname);
-        console.log(`✅ DNS resolution successful for ${hostname}`);
-      } catch (dnsError) {
-        console.log(`⚠️  DNS resolution failed for ${hostname}, trying alternative DNS...`);
-        // Try with Google DNS
-        process.env.DNS_SERVERS = '8.8.8.8,8.8.4.4';
-      }
-    }
-    
-    await mongoose.connect(mongoOptions[currentUriIndex], {
-      serverSelectionTimeoutMS: 30000,
-      socketTimeoutMS: 45000,
-      maxPoolSize: 10,
-      minPoolSize: 1,
-      maxIdleTimeMS: 30000,
-      connectTimeoutMS: 30000
-    });
-    
+mongoose.connect(MONGODB_URI, {
+  // Remove deprecated options for MongoDB Driver 4.0+
+  maxPoolSize: 10,
+  serverSelectionTimeoutMS: 5000,
+  socketTimeoutMS: 45000,
+})
+  .then(async () => {
     console.log('✅ Connected to MongoDB successfully!');
     
-    // Start server only after successful connection
+    // Wait a moment to ensure connection is fully established
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Now that MongoDB is connected, create indexes and seed data
+    try {
+      console.log('🔧 Setting up database indexes and seeding data...');
+      
+      // Create Carbooking indexes
+      await Carbooking.createIndexes();
+      console.log('✅ Carbooking indexes created');
+      
+      // Remove problematic compound index first
+      try {
+        await Carbooking.collection.dropIndex('stripeSessionId_1_createdAt_1');
+        console.log('✅ Removed problematic compound index from Carbooking');
+      } catch (indexError) {
+        console.log('ℹ️ Compound index already removed or error:', indexError.message);
+      }
+      
+      // Create unique compound index to prevent duplicate bookings for same user/date/time
+      try {
+        await Carbooking.collection.createIndex(
+          { 
+            'customer.email': 1, 
+            date: 1, 
+            time: 1 
+          }, 
+          { unique: true, name: 'unique_user_datetime' }
+        );
+        console.log('✅ Unique user/date/time index created for Carbooking');
+      } catch (indexError) {
+        console.log('ℹ️ User/date/time index already exists or error:', indexError.message);
+      }
+      
+      // Create simple index on stripeSessionId to prevent exact duplicates
+      try {
+        await Carbooking.collection.createIndex(
+          { stripeSessionId: 1 }, 
+          { unique: true, sparse: true }
+        );
+        console.log('✅ Unique session index created for Carbooking');
+      } catch (indexError) {
+        console.log('ℹ️ Session index already exists or error:', indexError.message);
+      }
+      
+      // Create UserService indexes
+      await UserService.createIndexes();
+      console.log('✅ UserService indexes created');
+      
+      // Remove problematic compound index first
+      try {
+        await UserService.collection.dropIndex('stripeSessionId_1_createdAt_1');
+        console.log('✅ Removed problematic compound index from UserService');
+      } catch (indexError) {
+        console.log('ℹ️ Compound index already removed or error:', indexError.message);
+      }
+      
+      // Create unique compound index to prevent duplicate UserServices for same user/date/time
+      try {
+        await UserService.collection.createIndex(
+          { 
+            userEmail: 1, 
+            date: 1, 
+            time: 1 
+          }, 
+          { unique: true, name: 'unique_user_datetime_userservice' }
+        );
+        console.log('✅ Unique user/date/time index created for UserService');
+      } catch (indexError) {
+        console.log('ℹ️ UserService user/date/time index already exists or error:', indexError.message);
+      }
+      
+      // Create simple index on stripeSessionId for UserService
+      try {
+        await UserService.collection.createIndex(
+          { stripeSessionId: 1 }, 
+          { unique: true, sparse: true }
+        );
+        console.log('✅ Unique session index created for UserService');
+      } catch (indexError) {
+        console.log('ℹ️ UserService session index already exists or error:', indexError.message);
+      }
+      
+      // Seed services and parts
+      await seedServices();
+      await seedParts();
+      
+      console.log('✅ Database setup completed successfully!');
+      
+    } catch (setupError) {
+      console.error('❌ Database setup failed:', setupError.message);
+    }
+    
+    // Start server after successful connection and setup
     app.listen(PORT, () => {
       console.log(`🚀 Server is running on port ${PORT}`);
       console.log(`🌐 Server URL: http://localhost:${PORT}`);
     });
+  })
+  .catch((err) => {
+    console.error('❌ MongoDB connection failed:', err.message);
+    console.log('💡 Troubleshooting tips:');
+    console.log('1. Check your internet connection');
+    console.log('2. Verify MongoDB Atlas is accessible');
+    console.log('3. Check if your IP is whitelisted in MongoDB Atlas');
     
-  } catch (err) {
-    console.error(`❌ MongoDB connection failed with option ${currentUriIndex + 1}:`, err.message);
-    
-    // Try next connection option
-    currentUriIndex++;
-    
-    if (currentUriIndex < mongoOptions.length) {
-      console.log(`🔄 Trying next connection option in 3 seconds...`);
-      setTimeout(connectWithRetry, 3000);
-    } else {
-      console.log('❌ All MongoDB connection options failed!');
-      console.log('💡 Troubleshooting tips:');
-      console.log('1. Check your internet connection');
-      console.log('2. Verify MongoDB Atlas is accessible');
-      console.log('3. Try using a different DNS server (like 8.8.8.8)');
-      console.log('4. Check if your IP is whitelisted in MongoDB Atlas');
-      
-      // Start server anyway for development (without database)
-      app.listen(PORT, () => {
-        console.log(`🚀 Server is running on port ${PORT} (NO DATABASE)`);
-        console.log(`⚠️  Note: Database features will not work!`);
-      });
-    }
-  }
-};
-
-// Start connection process
-connectWithRetry();
+    // Start server anyway for development (without database)
+    app.listen(PORT, () => {
+      console.log(`🚀 Server is running on port ${PORT} (NO DATABASE)`);
+      console.log(`⚠️  Note: Database features will not work!`);
+    });
+  });
 
 // User schema
 const userSchema = new mongoose.Schema({
@@ -551,46 +611,7 @@ const bookingSchema = new mongoose.Schema({
 });
 const Carbooking = mongoose.model('Carbooking', bookingSchema);
 
-// Create unique index to prevent duplicate bookings
-Carbooking.createIndexes().then(async () => {
-  console.log('✅ Carbooking indexes created');
-  
-  // Remove problematic compound index first
-  try {
-    await Carbooking.collection.dropIndex('stripeSessionId_1_createdAt_1');
-    console.log('✅ Removed problematic compound index from Carbooking');
-  } catch (indexError) {
-    console.log('ℹ️ Compound index already removed or error:', indexError.message);
-  }
-  
-  // Create unique compound index to prevent duplicate bookings for same user/date/time
-  try {
-    await Carbooking.collection.createIndex(
-      { 
-        'customer.email': 1, 
-        date: 1, 
-        time: 1 
-      }, 
-      { unique: true, name: 'unique_user_datetime' }
-    );
-    console.log('✅ Unique user/date/time index created for Carbooking');
-  } catch (indexError) {
-    console.log('ℹ️ User/date/time index already exists or error:', indexError.message);
-  }
-  
-  // Create simple index on stripeSessionId to prevent exact duplicates
-  try {
-    await Carbooking.collection.createIndex(
-      { stripeSessionId: 1 }, 
-      { unique: true, sparse: true }
-    );
-    console.log('✅ Unique session index created for Carbooking');
-  } catch (indexError) {
-    console.log('ℹ️ Session index already exists or error:', indexError.message);
-  }
-}).catch(err => {
-  console.error('❌ Error creating Carbooking indexes:', err);
-});
+// Index creation will be handled after MongoDB connection is established
 
 async function seedServices() {
   const count = await Service.countDocuments();
@@ -642,10 +663,7 @@ async function seedParts() {
   }
 }
 
-mongoose.connection.once('open', () => {
-  seedServices().catch(err => console.error('Service seeding failed:', err));
-  seedParts().catch(err => console.error('Parts seeding failed:', err));
-});
+// Seeding will be handled after MongoDB connection is established
 
 // --- PARTS API ENDPOINTS ---
 
@@ -1976,78 +1994,53 @@ const userServiceSchema = new mongoose.Schema({
 });
 const UserService = mongoose.model('UserService', userServiceSchema);
 
-// Create unique index to prevent duplicate UserServices
-UserService.createIndexes().then(async () => {
-  console.log('✅ UserService indexes created');
-  
-  // Remove problematic compound index first
-  try {
-    await UserService.collection.dropIndex('stripeSessionId_1_createdAt_1');
-    console.log('✅ Removed problematic compound index from UserService');
-  } catch (indexError) {
-    console.log('ℹ️ Compound index already removed or error:', indexError.message);
-  }
-  
-  // Create unique compound index to prevent duplicate UserServices for same user/date/time
-  try {
-    await UserService.collection.createIndex(
-      { 
-        userEmail: 1, 
-        date: 1, 
-        time: 1 
-      }, 
-      { unique: true, name: 'unique_user_datetime_userservice' }
-    );
-    console.log('✅ Unique user/date/time index created for UserService');
-  } catch (indexError) {
-    console.log('ℹ️ UserService user/date/time index already exists or error:', indexError.message);
-  }
-  
-  // Create simple index on stripeSessionId for UserService
-  try {
-    await UserService.collection.createIndex(
-      { stripeSessionId: 1 }, 
-      { unique: true, sparse: true }
-    );
-    console.log('✅ Unique session index created for UserService');
-  } catch (indexError) {
-    console.log('ℹ️ UserService session index already exists or error:', indexError.message);
-  }
-}).catch(err => {
-  console.error('❌ Error creating UserService indexes:', err);
-});
+// Index creation will be handled after MongoDB connection is established
 
 // Create admin user endpoint
 app.post('/api/create-admin', async (req, res) => {
   try {
+    console.log('🔍 Admin creation request received');
     const { email, password } = req.body;
+    console.log('🔍 Request body:', { email, password: password ? '***' : 'missing' });
     
     // Only allow admin creation for specific credentials
     if (email !== 'admin1234@gmail.com' || password !== 'admin1234') {
+      console.log('❌ Invalid credentials provided');
       return res.status(403).json({ error: 'Invalid admin credentials' });
     }
     
+    console.log('🔍 Credentials validated, checking if admin exists...');
+    
     // Check if admin already exists
     let admin = await User.findOne({ email, role: 'admin' });
+    console.log('🔍 Admin lookup result:', admin ? `Found: ${admin._id}` : 'Not found');
     
     if (!admin) {
+      console.log('🔍 Creating new admin user...');
       // Create new admin user
       const hashedPassword = await bcrypt.hash(password, 10);
+      console.log('🔍 Password hashed successfully');
+      
       admin = new User({ 
         name: 'Admin Staff',
         email, 
         password: hashedPassword, 
         role: 'admin' 
       });
+      console.log('🔍 User model created, saving to database...');
+      
       await admin.save();
       console.log('✅ Admin user created successfully:', admin._id);
     } else {
       console.log('✅ Admin user already exists:', admin._id);
     }
     
+    console.log('🔍 Generating JWT token...');
     // Generate token
     const token = jwt.sign({ id: admin._id, role: 'admin' }, 'your_jwt_secret', { expiresIn: '1d' });
+    console.log('✅ JWT token generated');
     
+    console.log('✅ Admin user ready, sending response');
     res.json({ 
       success: true,
       message: 'Admin user ready',
@@ -2057,7 +2050,10 @@ app.post('/api/create-admin', async (req, res) => {
     
   } catch (err) {
     console.error('❌ Error creating admin user:', err);
-    res.status(500).json({ error: 'Failed to create admin user' });
+    console.error('❌ Error stack:', err.stack);
+    console.error('❌ Error name:', err.name);
+    console.error('❌ Error message:', err.message);
+    res.status(500).json({ error: 'Failed to create admin user', details: err.message });
   }
 });
 
@@ -2092,6 +2088,31 @@ app.get('/api/current-user', async (req, res) => {
   } catch (err) {
     console.error('❌ Error in current-user endpoint:', err);
     res.status(401).json({ message: 'Invalid token' });
+  }
+});
+
+// Debug endpoint to see all users in database
+app.get('/api/debug/users', async (req, res) => {
+  try {
+    const allUsers = await User.find({}).select('email name role');
+    console.log('🔍 Debug: All users found:', allUsers.length);
+    allUsers.forEach((user, i) => {
+      console.log(`🔍 User ${i}:`, {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        role: user.role
+      });
+    });
+    
+    res.json({ 
+      success: true,
+      userCount: allUsers.length,
+      users: allUsers
+    });
+  } catch (err) {
+    console.error('❌ Error fetching users:', err);
+    res.status(500).json({ error: 'Failed to fetch users' });
   }
 });
 
@@ -3885,15 +3906,37 @@ app.post('/api/bookings/:bookingId/messages', async (req, res) => {
       if (senderType === 'admin') {
         // Find admin user by email
         console.log('🔍 Looking for admin user with email:', senderEmail);
-        const adminUser = await User.findOne({ email: senderEmail, role: 'admin' });
+        let adminUser = await User.findOne({ email: senderEmail, role: 'admin' });
+        
         if (!adminUser) {
           console.log('❌ Admin user not found for email:', senderEmail);
           console.log('🔍 Available admin users:');
           const allAdmins = await User.find({ role: 'admin' });
           allAdmins.forEach(admin => console.log('  -', admin.email, admin.name, admin._id));
-          return res.status(400).json({ error: 'Admin user not found' });
+          
+          // Try to create admin user if it's the expected admin email
+          if (senderEmail === 'admin1234@gmail.com') {
+            console.log('🔍 Attempting to create admin user...');
+            try {
+              const hashedPassword = await bcrypt.hash('admin1234', 10);
+              adminUser = new User({ 
+                name: 'Admin Staff',
+                email: senderEmail, 
+                password: hashedPassword, 
+                role: 'admin' 
+              });
+              await adminUser.save();
+              console.log('✅ Admin user created successfully:', adminUser._id);
+            } catch (createError) {
+              console.error('❌ Failed to create admin user:', createError);
+              return res.status(400).json({ error: 'Admin user not found and could not be created' });
+            }
+          } else {
+            return res.status(400).json({ error: 'Admin user not found' });
+          }
         }
-        console.log('✅ Found admin user:', adminUser._id, adminUser.name);
+        
+        console.log('✅ Found/created admin user:', adminUser._id, adminUser.name);
         senderUserId = adminUser._id;
       } else {
         // For customers, we don't require a User account - they can send messages based on their booking
@@ -4474,9 +4517,6 @@ app.get('/api/test-message-system', async (req, res) => {
     res.status(500).json({ error: 'Failed to test message system', details: error.message });
   }
 });
-
-// Server will be started after successful MongoDB connection
-const PORT = process.env.PORT || 5001;
 
 // Export for Vercel deployment
 module.exports = app;
