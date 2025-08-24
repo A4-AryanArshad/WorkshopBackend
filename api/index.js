@@ -2017,6 +2017,50 @@ UserService.createIndexes().then(async () => {
   console.error('❌ Error creating UserService indexes:', err);
 });
 
+// Create admin user endpoint
+app.post('/api/create-admin', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    // Only allow admin creation for specific credentials
+    if (email !== 'admin1234@gmail.com' || password !== 'admin1234') {
+      return res.status(403).json({ error: 'Invalid admin credentials' });
+    }
+    
+    // Check if admin already exists
+    let admin = await User.findOne({ email, role: 'admin' });
+    
+    if (!admin) {
+      // Create new admin user
+      const hashedPassword = await bcrypt.hash(password, 10);
+      admin = new User({ 
+        name: 'Admin Staff',
+        email, 
+        password: hashedPassword, 
+        role: 'admin' 
+      });
+      await admin.save();
+      console.log('✅ Admin user created successfully:', admin._id);
+    } else {
+      console.log('✅ Admin user already exists:', admin._id);
+    }
+    
+    // Generate token
+    const token = jwt.sign({ id: admin._id, role: 'admin' }, 'your_jwt_secret', { expiresIn: '1d' });
+    
+    res.json({ 
+      success: true,
+      message: 'Admin user ready',
+      token,
+      role: 'admin'
+    });
+    
+  } catch (err) {
+    console.error('❌ Error creating admin user:', err);
+    res.status(500).json({ error: 'Failed to create admin user' });
+  }
+});
+
 // Get current user info from JWT token
 app.get('/api/current-user', async (req, res) => {
   try {
