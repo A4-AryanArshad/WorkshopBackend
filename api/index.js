@@ -1856,28 +1856,36 @@ app.post('/api/contact', async (req, res) => {
 // Upload endpoint
 app.post('/upload-service-image', upload.array('images'), async (req, res) => {
   try {
-    console.log("Helloooooooo");
+    console.log("🔄 Image upload request received");
+    console.log("📋 Request body:", req.body);
+    console.log("📁 Files:", req.files ? req.files.length : 'No files');
+    
     const { userId, serviceId, customerEmail } = req.body;
-    console.log(userId);
-    console.log("Service");
-    console.log(serviceId);
-    console.log("Customer Email:", customerEmail);
+    
     if (!userId || !serviceId || !req.files) {
+      console.log("❌ Missing required fields:", { userId, serviceId, hasFiles: !!req.files });
       return res.status(400).json({ message: 'Missing required fields.' });
     }
     
     // Use customer email if provided, otherwise use userId
     const actualUserId = customerEmail || userId;
+    console.log("👤 Using user ID:", actualUserId);
+    console.log("🔧 Service ID:", serviceId);
     
     const imageDocs = req.files.map(file => ({
       userId: actualUserId,
       serviceId,
       imageUrl: file.path
     }));
+    
+    console.log("💾 Saving image documents:", imageDocs);
     await ServiceImage.insertMany(imageDocs);
+    
+    console.log("✅ Images uploaded successfully");
     res.status(200).json({ message: 'Images uploaded!', images: imageDocs });
+    
   } catch (err) {
-    console.error('UPLOAD ERROR:', err);
+    console.error('❌ UPLOAD ERROR:', err);
     res.status(500).json({ message: 'Upload failed', error: err.message, stack: err.stack });
   }
 });
@@ -1886,7 +1894,7 @@ app.post('/upload-service-image', upload.array('images'), async (req, res) => {
 app.get('/api/service-images/:serviceId', async (req, res) => {
   try {
     const { serviceId } = req.params;
-    const images = await ServiceImage.find({ serviceId }).sort({ uploadedAt: -1 });x
+    const images = await ServiceImage.find({ serviceId }).sort({ uploadedAt: -1 });
     res.json(images);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch service images', details: err.message });
