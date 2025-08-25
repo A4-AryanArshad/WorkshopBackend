@@ -271,10 +271,6 @@ const sendBookingConfirmationEmail = async (userEmail, userName, carDetails, ser
               <div class="section">
                 <h3>Customer Details</h3>
                 <div class="detail-row">
-                  <span class="detail-label">Name:</span>
-                  <span class="detail-value">${userName}</span>
-                </div>
-                <div class="detail-row">
                   <span class="detail-label">Email:</span>
                   <span class="detail-value">${userEmail}</span>
                 </div>
@@ -406,7 +402,7 @@ async function connectToMongoDB() {
     
     console.log('🔌 Connection options:', options);
     
-    await mongoose.connect(MONGODB_URI);
+    await mongoose.connect(MONGODB_URI, options);
     
     console.log('✅ Connected to MongoDB successfully!');
     console.log('✅ Connection state:', mongoose.connection.readyState);
@@ -419,6 +415,10 @@ async function connectToMongoDB() {
     // Now that MongoDB is connected, create indexes and seed data
     try {
       console.log('🔧 Setting up database indexes and seeding data...');
+      
+      // Create custom indexes for duplicate prevention
+      await createIndexes();
+      console.log('✅ Custom indexes created');
       
       // Create Carbooking indexes
       await Carbooking.createIndexes();
@@ -613,6 +613,45 @@ const bookingSchema = new mongoose.Schema({
 const Carbooking = mongoose.model('Carbooking', bookingSchema);
 
 // Index creation will be handled after MongoDB connection is established
+// Add unique index on stripeSessionId to prevent duplicates
+async function createIndexes() {
+  try {
+    // DROP THE PROBLEMATIC unique_user_datetime INDEX
+    try {
+      await Carbooking.collection.dropIndex('unique_user_datetime');
+      console.log('✅ Dropped problematic unique_user_datetime index');
+    } catch (dropError) {
+      console.log('ℹ️ unique_user_datetime index not found or already dropped');
+    }
+    
+    // Create unique index on stripeSessionId for Carbooking
+    await Carbooking.collection.createIndex({ stripeSessionId: 1 }, { unique: true, sparse: true });
+    console.log('✅ Created unique index on stripeSessionId for Carbooking');
+    
+    // Create unique index on stripeSessionId for UserService
+    await UserService.collection.createIndex({ stripeSessionId: 1 }, { unique: true, sparse: true });
+    console.log('✅ Created unique index on stripeSessionId for UserService');
+    
+    // DROP THE PROBLEMATIC unique_user_datetime_userservice INDEX
+    try {
+      await UserService.collection.dropIndex('unique_user_datetime_userservice');
+      console.log('✅ Dropped problematic unique_user_datetime_userservice index');
+    } catch (dropError) {
+      console.log('ℹ️ unique_user_datetime_userservice index not found or already dropped');
+    }
+    
+    // Create compound index for recent duplicate prevention
+    await Carbooking.collection.createIndex({ 
+      'customer.email': 1, 
+      'car.registration': 1, 
+      createdAt: 1 
+    });
+    console.log('✅ Created compound index for duplicate prevention');
+    
+  } catch (error) {
+    console.error('❌ Error creating indexes:', error);
+  }
+}
 
 async function seedServices() {
   const count = await Service.countDocuments();
@@ -1155,7 +1194,7 @@ app.post('/api/forgot-password', async (req, res) => {
     await resetTokenDoc.save();
 
     // Create reset link
-    const resetLink = `https://workshopfrontend-one.vercel.app/reset-password?token=${resetToken}`;
+    const resetLink = `http://localhost:3000/reset-password?token=${resetToken}`;
     
     // Send email with reset link
     const mailOptions = {
@@ -1433,7 +1472,7 @@ app.post('/api/reset-password', async (req, res) => {
                 </p>
                 
                 <div style="text-align: center;">
-                  <a href="https://workshopfrontend-one.vercel.app/login" class="login-button">
+                  <a href="http://localhost:3000/login" class="login-button">
                     Login Now
                   </a>
                 </div>
@@ -1648,7 +1687,7 @@ app.post('/api/contact', async (req, res) => {
                 <a href="mailto:${email}" class="btn">
                   Reply to ${name}
                 </a>
-                <a href="https://workshopfrontend-one.vercel.app/dashboard" class="btn">
+                <a href="http://localhost:3000/dashboard" class="btn">
                   Go to Dashboard
                 </a>
               </div>
@@ -2198,14 +2237,21 @@ app.post('/api/create-checkout-session', async (req, res) => {
             name: item.service.label || 'Service',
             description: item.service.sub || 'Service description',
           },
-          unit_amount: Math.round((item.service.price || 0) * 100), // Convert to pence
+          unit_amount: Math.round(((item.service.price || 0) + (item.service.labourHours ? (item.service.labourHours * (item.service.labourCost || 10)) : 0)) * 100), // Convert to pence including labour
         },
         quantity: item.quantity || 1,
       };
       
+      const basePrice = item.service.price || 0;
+      const labourCost = item.service.labourHours ? (item.service.labourHours * (item.service.labourCost || 10)) : 0;
+      const totalPrice = basePrice + labourCost;
+      
       console.log(`💰 Line item ${index}:`, {
         name: lineItem.price_data.product_data.name,
         description: lineItem.price_data.product_data.description,
+        basePrice: `£${basePrice}`,
+        labourCost: `£${labourCost}`,
+        totalPrice: `£${totalPrice}`,
         unit_amount: lineItem.price_data.unit_amount,
         quantity: lineItem.quantity
       });
@@ -2244,12 +2290,17 @@ app.post('/api/create-checkout-session', async (req, res) => {
           serviceId: item.service._id,
           label: item.service.label,
           price: item.service.price,
+          labourHours: item.service.labourHours || 0,
+          labourCost: item.service.labourCost || 0,
+          totalPrice: (item.service.price || 0) + (item.service.labourHours ? (item.service.labourHours * (item.service.labourCost || 10)) : 0),
           quantity: item.quantity
         })))
       }
     });
     
     console.log('✅ Stripe session created successfully:', session.id);
+    console.log('🔗 Generated success URL:', `${req.headers.origin}/payment-success?session_id=${session.id}`);
+    console.log('🔗 Origin header:', req.headers.origin);
 
     console.log('🔗 Stripe session metadata created:', {
       customerEmail,
@@ -2753,6 +2804,19 @@ app.post('/api/create-booking-from-session', async (req, res) => {
     console.log('🚗 Car Details received:', carDetails);
     console.log('📦 Service Details received:', serviceDetails);
     
+          // Check if we have multiple services
+      const hasMultipleServices = serviceDetails?.services && Array.isArray(serviceDetails.services) && serviceDetails.services.length > 1;
+      console.log('🛒 Multiple services detected:', hasMultipleServices);
+      if (hasMultipleServices) {
+        console.log('📋 All services in cart:', serviceDetails.services.map((s) => ({
+          label: s.service.label,
+          price: s.service.price,
+          labourHours: s.service.labourHours,
+          labourCost: s.service.labourCost,
+          total: s.service.price + (s.service.labourHours ? (s.service.labourHours * (s.service.labourCost || 10)) : 0)
+        })));
+      }
+    
     // Enhanced duplicate detection - check multiple criteria
     console.log('🔍 Checking for existing bookings...');
     
@@ -3027,16 +3091,29 @@ app.post('/api/create-booking-direct', async (req, res) => {
     console.log('🚗 Car Details:', carDetails);
     console.log('📦 Service Details:', serviceDetails);
     
-    // TIMESTAMP-BASED DUPLICATE PREVENTION: Check for bookings in the last 5 seconds
-    const fiveSecondsAgo = new Date(Date.now() - 5000);
+          // Check if we have multiple services
+      const hasMultipleServices = serviceDetails?.services && Array.isArray(serviceDetails.services) && serviceDetails.services.length > 1;
+      console.log('🛒 Multiple services detected:', hasMultipleServices);
+      if (hasMultipleServices) {
+        console.log('📋 All services in cart:', serviceDetails.services.map((s) => ({
+          label: s.service.label,
+          price: s.service.price,
+          labourHours: s.service.labourHours,
+          labourCost: s.service.labourCost,
+          total: s.service.price + (s.service.labourHours ? (s.service.labourHours * (s.service.labourCost || 10)) : 0)
+        })));
+      }
+    
+    // ENHANCED DUPLICATE PREVENTION: Check for bookings in the last 10 seconds
+    const tenSecondsAgo = new Date(Date.now() - 10000);
     const veryRecentBooking = await Carbooking.findOne({
       'customer.email': userEmail,
       'car.registration': carDetails?.registration,
-      createdAt: { $gte: fiveSecondsAgo }
+      createdAt: { $gte: tenSecondsAgo }
     });
     
     if (veryRecentBooking) {
-      console.log('🚫 Very recent booking found (within 5 seconds), preventing duplicate:', veryRecentBooking._id);
+      console.log('🚫 Very recent booking found (within 10 seconds), preventing duplicate:', veryRecentBooking._id);
       return res.json({ 
         success: true, 
         bookingId: veryRecentBooking._id,
@@ -3045,7 +3122,7 @@ app.post('/api/create-booking-direct', async (req, res) => {
       });
     }
     
-    // Check if booking already exists for this session
+    // Check if booking already exists for this session (PRIMARY CHECK)
     const existingBooking = await Carbooking.findOne({ 
       stripeSessionId: sessionId
     });
@@ -3063,7 +3140,7 @@ app.post('/api/create-booking-direct', async (req, res) => {
     // Check for any recent session-based bookings to prevent rapid duplicates
     const recentSessionBooking = await Carbooking.findOne({
       stripeSessionId: { $exists: true, $ne: null },
-      createdAt: { $gte: new Date(Date.now() - 30000) } // Last 30 seconds
+      createdAt: { $gte: new Date(Date.now() - 10000) } // Last 10 seconds (reduced from 30)
     });
     
     if (recentSessionBooking && recentSessionBooking.stripeSessionId !== sessionId) {
@@ -3074,6 +3151,8 @@ app.post('/api/create-booking-direct', async (req, res) => {
         isDuplicate: true
       });
     }
+    
+    // NOTE: Users can now book multiple services - removed restrictive checks
     
     // Parse the date
     let actualDate = new Date();
@@ -3099,6 +3178,9 @@ app.post('/api/create-booking-direct', async (req, res) => {
     console.log('📅 Using date:', actualDate);
     console.log('⏰ Using time:', actualTime);
     console.log('💰 Using total:', actualTotal);
+    
+    // NOTE: Users can now book multiple services on the same date/time
+    // The unique_user_datetime constraint has been removed
     
     // Create Carbooking
     const basicBooking = new Carbooking({
@@ -3126,39 +3208,140 @@ app.post('/api/create-booking-direct', async (req, res) => {
       basicBooking.createdAt = new Date();
     }
 
-    await basicBooking.save();
-    console.log('✅ Direct booking created with ID:', basicBooking._id);
-    
-    // Create UserService
-    const basicUserService = new UserService({
-      userId: userEmail || 'customer@example.com',
-      userEmail: userEmail || 'customer@example.com',
-      userName: userName || 'Customer',
-      car: carDetails,
-      service: {
-        label: serviceDetails?.label || 'Service Booking',
-        sub: serviceDetails?.description || 'Booking created directly',
-        price: serviceDetails?.price || 100.00,
-        category: 'service'
-      },
-      total: actualTotal,
-      subtotal: actualTotal * 0.8,
-      vat: actualTotal * 0.2,
-      date: actualDate.toISOString().split('T')[0],
-      time: actualTime,
-      category: 'service',
-      status: 'pending',
-      stripeSessionId: sessionId,
-      createdAt: new Date()
-    });
-
-    // Ensure createdAt is set
-    if (!basicUserService.createdAt) {
-      basicUserService.createdAt = new Date();
+    try {
+      await basicBooking.save();
+      console.log('✅ Direct booking created with ID:', basicBooking._id);
+    } catch (saveError) {
+      // Handle duplicate key error gracefully
+      if (saveError.code === 11000) {
+        console.log('⚠️ Duplicate key error when saving booking, checking for existing...');
+        
+        // Try to find the existing booking
+        const existingBooking = await Carbooking.findOne({ 
+          stripeSessionId: sessionId 
+        });
+        
+        if (existingBooking) {
+          console.log('✅ Found existing booking with same session ID:', existingBooking._id);
+          return res.json({ 
+            success: true, 
+            bookingId: existingBooking._id,
+            message: 'Booking already exists for this session',
+            isDuplicate: true
+          });
+        }
+        
+        // If no existing booking found, this is a real error
+        console.error('❌ Duplicate key error but no existing booking found:', saveError);
+        
+        // Check if it's any other duplicate constraint
+        if (saveError.keyPattern) {
+          console.log('🚫 Duplicate key constraint violation:', saveError.keyPattern);
+          
+          // Try to find the existing booking with same session ID
+          const existingBooking = await Carbooking.findOne({ 
+            stripeSessionId: sessionId 
+          });
+          
+          if (existingBooking) {
+            console.log('✅ Found existing booking with same session ID:', existingBooking._id);
+            return res.json({ 
+              success: true, 
+              bookingId: existingBooking._id,
+              message: 'Booking already exists for this session',
+              isDuplicate: true
+            });
+          }
+        }
+        
+        return res.status(500).json({ 
+          error: 'Failed to create booking due to duplicate constraint', 
+          details: saveError.message 
+        });
+      }
+      
+      // Re-throw non-duplicate errors
+      throw saveError;
     }
+    
+    // Create UserService records for all services
+    let userServiceIds = [];
+    
+    if (hasMultipleServices && serviceDetails.services) {
+      // Create UserService for each service in the cart
+      console.log('🔄 Creating UserService records for multiple services...');
+      
+      for (const cartItem of serviceDetails.services) {
+        const serviceTotal = cartItem.service.price + (cartItem.service.labourHours ? (cartItem.service.labourHours * (cartItem.service.labourCost || 10)) : 0);
+        
+        const userService = new UserService({
+          userId: userEmail || 'customer@example.com',
+          userEmail: userEmail || 'customer@example.com',
+          userName: userName || 'Customer',
+          car: carDetails,
+          service: {
+            label: cartItem.service.label,
+            sub: cartItem.service.sub || cartItem.service.description || 'Service',
+            price: cartItem.service.price,
+            category: 'service',
+            labourHours: cartItem.service.labourHours || 0,
+            labourCost: cartItem.service.labourCost || 0
+          },
+          total: serviceTotal,
+          subtotal: serviceTotal * 0.8,
+          vat: serviceTotal * 0.2,
+          date: actualDate.toISOString().split('T')[0],
+          time: actualTime,
+          category: 'service',
+          status: 'pending',
+          stripeSessionId: `${sessionId}_${cartItem.service._id}`, // Make unique per service
+          createdAt: new Date()
+        });
 
-    await basicUserService.save();
-    console.log('✅ Direct UserService created with ID:', basicUserService._id);
+        try {
+          await userService.save();
+          userServiceIds.push(userService._id);
+          console.log(`✅ UserService created for ${cartItem.service.label} with ID:`, userService._id);
+        } catch (saveError) {
+          console.error(`❌ Error saving UserService for ${cartItem.service.label}:`, saveError);
+          // Continue with other services
+        }
+      }
+      
+      console.log(`✅ Created ${userServiceIds.length} UserService records for multiple services`);
+    } else {
+      // Create single UserService for single service
+      const basicUserService = new UserService({
+        userId: userEmail || 'customer@example.com',
+        userEmail: userEmail || 'customer@example.com',
+        userName: userName || 'Customer',
+        car: carDetails,
+        service: {
+          label: serviceDetails?.label || 'Service Booking',
+          sub: serviceDetails?.description || 'Booking created directly',
+          price: serviceDetails?.price || 100.00,
+          category: 'service'
+        },
+        total: actualTotal,
+        subtotal: actualTotal * 0.8,
+        vat: actualTotal * 0.2,
+        date: actualDate.toISOString().split('T')[0],
+        time: actualTime,
+        category: 'service',
+        status: 'pending',
+        stripeSessionId: sessionId,
+        createdAt: new Date()
+      });
+
+      try {
+        await basicUserService.save();
+        userServiceIds.push(basicUserService._id);
+        console.log('✅ Direct UserService created with ID:', basicUserService._id);
+      } catch (saveError) {
+        console.error('❌ Error saving UserService:', saveError);
+        // Don't fail the request if UserService creation fails
+      }
+    }
     
     // Send confirmation email to user
     try {
@@ -3186,8 +3369,8 @@ app.post('/api/create-booking-direct', async (req, res) => {
     res.json({ 
       success: true, 
       bookingId: basicBooking._id,
-      userServiceId: basicUserService._id,
-      message: 'Direct booking created successfully',
+      userServiceIds: userServiceIds,
+      message: hasMultipleServices ? 'Multiple services booked successfully' : 'Direct booking created successfully',
       data: {
         total: basicBooking.total,
         totalAmount: basicBooking.totalAmount,
@@ -3694,21 +3877,6 @@ const sendMessageNotificationEmail = async (recipientEmail, recipientName, sende
               font-size: 16px;
               line-height: 1.6;
             }
-            .action-buttons {
-              text-align: center;
-              margin-top: 30px;
-            }
-            .btn {
-              display: inline-block;
-              background: #ffd700;
-              color: #000000;
-              padding: 12px 24px;
-              text-decoration: none;
-              border-radius: 8px;
-              font-weight: 700;
-              margin: 0 10px;
-              text-transform: uppercase;
-            }
             .footer { 
               background-color: #000000; 
               color: #ffffff; 
@@ -3733,29 +3901,7 @@ const sendMessageNotificationEmail = async (recipientEmail, recipientName, sende
                 <div class="message-text">${message}</div>
               </div>
               
-              <div class="action-buttons">
-                <a href="${process.env.FRONTEND_URL || 'http://localhost:3000'}/messages" class="btn">
-                  View Message
-                </a>
-                <a href="${process.env.FRONTEND_URL || 'http://localhost:3000'}/dashboard" class="btn">
-                  Go to Dashboard
-                </a>
-              </div>
-              
-              <div style="margin-top: 30px; padding: 20px; background: #1a1a1a; border-radius: 8px; border: 1px solid #333;">
-                <h3 style="color: #ffd700; margin-bottom: 15px; font-size: 18px;">💬 Reply via Email</h3>
-                <p style="color: #cccccc; margin-bottom: 20px; font-size: 14px;">
-                  You can reply to this message by simply replying to this email. Your reply will automatically appear in the dashboard.
-                </p>
-                <div style="background: #232323; padding: 15px; border-radius: 6px; border-left: 3px solid #ffd700;">
-                  <p style="color: #ffffff; margin: 0; font-size: 14px; font-family: monospace;">
-                    <strong>Reply to:</strong> ${process.env.ADMIN_EMAIL || 'aryanarshad5413@gmail.com'}<br>
-                    <strong>Subject:</strong> Re: New Message from ${senderName} - Reliable Mechanics<br>
-                    <strong>Include:</strong> Your message here<br>
-                    <strong>Booking ID:</strong> ${bookingId}
-                  </p>
-                </div>
-              </div>
+            
             </div>
             <div class="footer">
               <p>Thank you for choosing <strong>Reliable Mechanics</strong></p>
@@ -4159,6 +4305,36 @@ app.get('/api/test-messages/:bookingId', async (req, res) => {
   } catch (error) {
     console.error('🧪 Test error:', error);
     res.status(500).json({ error: 'Test failed', details: error.message });
+  }
+});
+
+// Test endpoint for email functionality
+app.post('/api/test-email', async (req, res) => {
+  try {
+    const { userEmail, userName, carDetails, serviceDetails, bookingDate, bookingTime, totalAmount } = req.body;
+    console.log('🧪 Testing email sending:', { userEmail, userName, carDetails, serviceDetails, bookingDate, bookingTime, totalAmount });
+    
+    const emailSent = await sendBookingConfirmationEmail(
+      userEmail || 'test@example.com',
+      userName || 'Test User',
+      carDetails || { make: 'Test Car', model: 'Test Model', year: '2020', registration: 'TEST123' },
+      serviceDetails || { label: 'Test Service', description: 'Test Description', price: 100 },
+      bookingDate || '2025-08-25',
+      bookingTime || '09:00',
+      totalAmount || 100
+    );
+    
+    if (emailSent) {
+      console.log('✅ Test email sent successfully');
+      res.json({ success: true, message: 'Test email sent successfully' });
+    } else {
+      console.log('❌ Test email failed to send');
+      res.json({ success: false, message: 'Test email failed to send' });
+    }
+    
+  } catch (error) {
+    console.error('❌ Test email error:', error);
+    res.status(500).json({ error: 'Test email failed', details: error.message });
   }
 });
 
