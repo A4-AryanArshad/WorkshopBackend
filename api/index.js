@@ -1155,7 +1155,7 @@ app.post('/api/forgot-password', async (req, res) => {
     await resetTokenDoc.save();
 
     // Create reset link
-    const resetLink = `http://localhost:3000/reset-password?token=${resetToken}`;
+    const resetLink = `https://workshopfrontend-one.vercel.app/reset-password?token=${resetToken}`;
     
     // Send email with reset link
     const mailOptions = {
@@ -1433,7 +1433,7 @@ app.post('/api/reset-password', async (req, res) => {
                 </p>
                 
                 <div style="text-align: center;">
-                  <a href="http://localhost:3000/login" class="login-button">
+                  <a href="https://workshopfrontend-one.vercel.app/login" class="login-button">
                     Login Now
                   </a>
                 </div>
@@ -1648,7 +1648,7 @@ app.post('/api/contact', async (req, res) => {
                 <a href="mailto:${email}" class="btn">
                   Reply to ${name}
                 </a>
-                <a href="http://localhost:3000/dashboard" class="btn">
+                <a href="https://workshopfrontend-one.vercel.app/dashboard" class="btn">
                   Go to Dashboard
                 </a>
               </div>
