@@ -17,14 +17,14 @@ require('dotenv').config();
 // Server configuration
 const PORT = process.env.PORT || 5001;
 
-// DNS Configuration - Prioritize IPv4 connections
-const dns = require('dns');
-try {
-  dns.setDefaultResultOrder('ipv4first');
-  console.log('✅ DNS configured to prioritize IPv4 connections');
-} catch (error) {
-  console.log('⚠️ DNS configuration failed (Node.js version compatibility):', error.message);
-}
+// DNS Configuration - Only set if needed for troubleshooting
+// const dns = require('dns');
+// try {
+//   dns.setDefaultResultOrder('ipv4first');
+//   console.log('✅ DNS configured to prioritize IPv4 connections');
+// } catch (error) {
+//   console.log('⚠️ DNS configuration failed (Node.js version compatibility):', error.message);
+// }
 
 
 
@@ -382,22 +382,39 @@ app.use(cors({
 app.use(express.json());
 
 // MongoDB Connection String
-const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/mechanics"
+const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://ali:ali@cluster0.xkuanbt.mongodb.net/?retryWrites=true&w=majority"
 
 console.log('🔌 Attempting to connect to MongoDB...');
 console.log('🔌 Connection string:', MONGODB_URI.replace(/\/\/[^:]+:[^@]+@/, '//***:***@')); // Hide credentials in logs
 
-mongoose.connect(MONGODB_URI, {
-  // Remove deprecated options for MongoDB Driver 4.0+
-  maxPoolSize: 10,
-  serverSelectionTimeoutMS: 5000,
-  socketTimeoutMS: 45000,
-})
-  .then(async () => {
-    console.log('✅ Connected to MongoDB successfully!');
+// Orphaned code removed
+
+// Simple MongoDB connection function
+async function connectToMongoDB() {
+  try {
+    console.log('🔌 Attempting to connect to MongoDB...');
+    console.log('🔌 Connection string:', MONGODB_URI.replace(/\/\/[^:]+:[^@]+@/, '//***:***@')); // Hide credentials in logs
     
-    // Wait a moment to ensure connection is fully established
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // Simple connection options
+    const options = {
+      serverSelectionTimeoutMS: 15000,  // 15 seconds
+      socketTimeoutMS: 45000,
+      maxPoolSize: 5,
+      retryWrites: true,
+      w: 'majority'
+    };
+    
+    console.log('🔌 Connection options:', options);
+    
+    await mongoose.connect(MONGODB_URI);
+    
+    console.log('✅ Connected to MongoDB successfully!');
+    console.log('✅ Connection state:', mongoose.connection.readyState);
+    console.log('✅ Database name:', mongoose.connection.name);
+    
+    // Test a simple operation
+    const collections = await mongoose.connection.db.listCollections().toArray();
+    console.log('✅ Available collections:', collections.map(c => c.name));
     
     // Now that MongoDB is connected, create indexes and seed data
     try {
@@ -407,76 +424,24 @@ mongoose.connect(MONGODB_URI, {
       await Carbooking.createIndexes();
       console.log('✅ Carbooking indexes created');
       
-      // Remove problematic compound index first
+      // Create basic indexes
       try {
-        await Carbooking.collection.dropIndex('stripeSessionId_1_createdAt_1');
-        console.log('✅ Removed problematic compound index from Carbooking');
+        await Carbooking.collection.createIndex({ 'customer.email': 1 });
+        console.log('✅ Customer email index created');
       } catch (indexError) {
-        console.log('ℹ️ Compound index already removed or error:', indexError.message);
-      }
-      
-      // Create unique compound index to prevent duplicate bookings for same user/date/time
-      try {
-        await Carbooking.collection.createIndex(
-          { 
-            'customer.email': 1, 
-            date: 1, 
-            time: 1 
-          }, 
-          { unique: true, name: 'unique_user_datetime' }
-        );
-        console.log('✅ Unique user/date/time index created for Carbooking');
-      } catch (indexError) {
-        console.log('ℹ️ User/date/time index already exists or error:', indexError.message);
-      }
-      
-      // Create simple index on stripeSessionId to prevent exact duplicates
-      try {
-        await Carbooking.collection.createIndex(
-          { stripeSessionId: 1 }, 
-          { unique: true, sparse: true }
-        );
-        console.log('✅ Unique session index created for Carbooking');
-      } catch (indexError) {
-        console.log('ℹ️ Session index already exists or error:', indexError.message);
+        console.log('ℹ️ Customer email index already exists');
       }
       
       // Create UserService indexes
       await UserService.createIndexes();
       console.log('✅ UserService indexes created');
       
-      // Remove problematic compound index first
+      // Create basic indexes
       try {
-        await UserService.collection.dropIndex('stripeSessionId_1_createdAt_1');
-        console.log('✅ Removed problematic compound index from UserService');
+        await UserService.collection.createIndex({ userEmail: 1 });
+        console.log('✅ UserService email index created');
       } catch (indexError) {
-        console.log('ℹ️ Compound index already removed or error:', indexError.message);
-      }
-      
-      // Create unique compound index to prevent duplicate UserServices for same user/date/time
-      try {
-        await UserService.collection.createIndex(
-          { 
-            userEmail: 1, 
-            date: 1, 
-            time: 1 
-          }, 
-          { unique: true, name: 'unique_user_datetime_userservice' }
-        );
-        console.log('✅ Unique user/date/time index created for UserService');
-      } catch (indexError) {
-        console.log('ℹ️ UserService user/date/time index already exists or error:', indexError.message);
-      }
-      
-      // Create simple index on stripeSessionId for UserService
-      try {
-        await UserService.collection.createIndex(
-          { stripeSessionId: 1 }, 
-          { unique: true, sparse: true }
-        );
-        console.log('✅ Unique session index created for UserService');
-      } catch (indexError) {
-        console.log('ℹ️ UserService session index already exists or error:', indexError.message);
+        console.log('ℹ️ UserService email index already exists');
       }
       
       // Seed services and parts
@@ -494,20 +459,56 @@ mongoose.connect(MONGODB_URI, {
       console.log(`🚀 Server is running on port ${PORT}`);
       console.log(`🌐 Server URL: http://localhost:${PORT}`);
     });
-  })
-  .catch((err) => {
-    console.error('❌ MongoDB connection failed:', err.message);
-    console.log('💡 Troubleshooting tips:');
+    
+    return true;
+    
+  } catch (err) {
+    console.error('❌ MongoDB connection failed!');
+    console.error('❌ Error type:', err.name);
+    console.error('❌ Error message:', err.message);
+    console.error('❌ Error code:', err.code);
+    
+    // Provide specific troubleshooting advice
+    if (err.name === 'MongoServerSelectionError') {
+      console.log('\n🔒 SERVER SELECTION ERROR - Possible causes:');
+      console.log('1. Network connectivity issues');
+      console.log('2. MongoDB Atlas is down');
+      console.log('3. IP whitelist restrictions');
+      console.log('4. Invalid connection string');
+    } else if (err.name === 'MongoParseError') {
+      console.log('\n🔒 PARSE ERROR - Possible causes:');
+      console.log('1. Invalid connection string format');
+      console.log('2. Special characters in password');
+      console.log('3. Missing required parameters');
+    } else if (err.name === 'MongoNetworkError') {
+      console.log('\n🔒 NETWORK ERROR - Possible causes:');
+      console.log('1. Firewall blocking connection');
+      console.log('2. DNS resolution issues');
+      console.log('3. Network timeout');
+    }
+    
+    console.log('\n💡 Troubleshooting steps:');
     console.log('1. Check your internet connection');
     console.log('2. Verify MongoDB Atlas is accessible');
     console.log('3. Check if your IP is whitelisted in MongoDB Atlas');
+    console.log('4. Try using a different DNS server (Google DNS: 8.8.8.8)');
+    console.log('5. Check if your firewall is blocking the connection');
+    console.log('6. Try connecting from a different network');
     
     // Start server anyway for development (without database)
     app.listen(PORT, () => {
       console.log(`🚀 Server is running on port ${PORT} (NO DATABASE)`);
       console.log(`⚠️  Note: Database features will not work!`);
     });
-  });
+    
+    return false;
+  }
+}
+
+// Test connection function removed - not needed
+
+// Connect to MongoDB
+connectToMongoDB();
 
 // User schema
 const userSchema = new mongoose.Schema({
