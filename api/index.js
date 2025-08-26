@@ -450,6 +450,9 @@ async function connectToMongoDB() {
       
       console.log('✅ Database setup completed successfully!');
       
+      // Clean up any existing duplicate images
+      await cleanupDuplicateImages();
+      
     } catch (setupError) {
       console.error('❌ Database setup failed:', setupError.message);
     }
@@ -527,14 +530,111 @@ const passwordResetTokenSchema = new mongoose.Schema({
 });
 const PasswordResetToken = mongoose.model('PasswordResetToken', passwordResetTokenSchema);
 
-// ServiceImage schema
+// Simplified ServiceImage schema - direct association with services
 const serviceImageSchema = new mongoose.Schema({
-  userId: String, // Changed from ObjectId to String
-  serviceId: String, // Keep as String for consistency
+  serviceId: { type: String, required: true }, // Direct service ID
+  userId: { type: String, required: true }, // Customer email for proper association
   imageUrl: { type: String, required: true },
-  uploadedAt: { type: Date, default: Date.now }
+  uploadedAt: { type: Date, default: Date.now },
+  uploadedBy: { type: String, default: 'admin' }
 });
+
+// Simple index to prevent duplicate images for the same service
+serviceImageSchema.index({ serviceId: 1, imageUrl: 1 }, { unique: true });
+// Index for efficient user-based queries
+serviceImageSchema.index({ userId: 1, serviceId: 1 });
+
 const ServiceImage = mongoose.model('ServiceImage', serviceImageSchema);
+
+// Function to clean up duplicate images
+async function cleanupDuplicateImages() {
+  try {
+    console.log("🧹 Starting duplicate image cleanup...");
+    
+    // Find all images
+    const allImages = await ServiceImage.find({});
+    console.log(`📸 Total images in database: ${allImages.length}`);
+    
+    // Group images by URL to find duplicates
+    const imageUrlGroups = {};
+    allImages.forEach(img => {
+      if (!imageUrlGroups[img.imageUrl]) {
+        imageUrlGroups[img.imageUrl] = [];
+      }
+      imageUrlGroups[img.imageUrl].push(img);
+    });
+    
+    // Find URLs that appear in multiple services
+    const duplicates = Object.entries(imageUrlGroups).filter(([url, images]) => images.length > 1);
+    
+    if (duplicates.length === 0) {
+      console.log("✅ No duplicate images found across services");
+      return;
+    }
+    
+    console.log(`⚠️ Found ${duplicates.length} duplicate image URLs across services`);
+    
+    // For each duplicate, keep only the first occurrence and remove others
+    let removedCount = 0;
+    for (const [url, images] of duplicates) {
+      console.log(`🔍 Processing duplicate URL: ${url}`);
+      console.log(`   Found in ${images.length} services:`, images.map(img => img.serviceId));
+      
+      // Keep the first image, remove the rest
+      const imagesToRemove = images.slice(1);
+      for (const imgToRemove of imagesToRemove) {
+        await ServiceImage.findByIdAndDelete(imgToRemove._id);
+        removedCount++;
+        console.log(`   ❌ Removed duplicate from service: ${imgToRemove.serviceId}`);
+      }
+    }
+    
+    console.log(`✅ Cleanup completed. Removed ${removedCount} duplicate images`);
+    
+  } catch (error) {
+    console.error("❌ Error during duplicate cleanup:", error);
+  }
+}
+
+// Function to clean up incorrectly associated images
+async function cleanupIncorrectlyAssociatedImages() {
+  try {
+    console.log("🧹 Starting cleanup of incorrectly associated images...");
+    
+    // Find all images
+    const allImages = await ServiceImage.find({});
+    console.log(`📸 Total images in database: ${allImages.length}`);
+    
+    let cleanedCount = 0;
+    
+    for (const img of allImages) {
+      // Check if the serviceId exists in Carbooking
+      const carbooking = await Carbooking.findById(img.serviceId);
+      
+      if (!carbooking) {
+        console.log(`❌ Image ${img._id} has invalid serviceId: ${img.serviceId}`);
+        // Remove images with invalid serviceId
+        await ServiceImage.findByIdAndDelete(img._id);
+        cleanedCount++;
+        continue;
+      }
+      
+      // Check if the userId matches the customer email in the booking
+      if (img.userId && carbooking.customer?.email && img.userId !== carbooking.customer.email) {
+        console.log(`❌ Image ${img._id} has mismatched userId: ${img.userId} vs ${carbooking.customer.email}`);
+        // Update the userId to match the customer email
+        await ServiceImage.findByIdAndUpdate(img._id, { userId: carbooking.customer.email });
+        cleanedCount++;
+        console.log(`✅ Fixed userId for image ${img._id}`);
+      }
+    }
+    
+    console.log(`✅ Cleanup completed. Fixed ${cleanedCount} incorrectly associated images`);
+    
+  } catch (error) {
+    console.error("❌ Error during association cleanup:", error);
+  }
+}
 
 // Service schema
 const serviceSchema = new mongoose.Schema({
@@ -968,6 +1068,30 @@ app.post('/api/bookings', async (req, res) => {
       console.log('⏰ Time field received:', req.body.time);
       console.log('📅 Date field received:', req.body.date);
       
+      // Look up the service to get labour information if not provided
+      let labourHours = req.body.labourHours;
+      let labourCost = req.body.labourCost;
+      
+      if (!labourHours || !labourCost) {
+        try {
+          const serviceLabel = req.body.service?.label;
+          if (serviceLabel) {
+            const serviceDefinition = await Service.findOne({ label: serviceLabel });
+            if (serviceDefinition) {
+              console.log('🔧 Found service definition:', { 
+                label: serviceDefinition.label, 
+                labourHours: serviceDefinition.labourHours, 
+                labourCost: serviceDefinition.labourCost 
+              });
+              labourHours = labourHours || serviceDefinition.labourHours || 0;
+              labourCost = labourCost || serviceDefinition.labourCost || 0;
+            }
+          }
+        } catch (serviceLookupError) {
+          console.log('⚠️ Could not look up service definition:', serviceLookupError.message);
+        }
+      }
+      
       const userServiceData = {
         userId: req.body.customer.email, // Using email as userId for simplicity
         userEmail: req.body.customer.email,
@@ -975,8 +1099,8 @@ app.post('/api/bookings', async (req, res) => {
         car: req.body.car,
         service: req.body.service,
         parts: req.body.parts,
-        labourHours: req.body.labourHours,
-        labourCost: req.body.labourCost,
+        labourHours: labourHours,
+        labourCost: labourCost,
         partsCost: req.body.partsCost,
         subtotal: req.body.subtotal,
         vat: req.body.vat,
@@ -1089,16 +1213,33 @@ app.get('/api/bookings', async (req, res) => {
   }
 });
 
-// GET /api/bookings/:registration - Get bookings for a registration (case-insensitive)
+// SIMPLIFIED: Get all services for a car number (admin search)
 app.get('/api/bookings/:registration', async (req, res) => {
   try {
     const registration = req.params.registration;
+    console.log('🔍 SIMPLIFIED: Getting services for car:', registration);
+    
     const bookings = await Carbooking.find({
-      'car.registration': { $regex: new RegExp(`^${registration}$`, 'i') }
+      'car.registration': { $regex: new RegExp(registration, 'i') }
     }).sort({ date: -1 });
-    res.json(bookings);
+    
+    console.log('📋 Found services:', bookings.length);
+    
+    // Return simplified service data
+    const services = bookings.map(booking => ({
+      _id: booking._id,
+      car: booking.car,
+      customer: booking.customer,
+      service: booking.service,
+      date: booking.date,
+      status: booking.status
+    }));
+    
+    res.json(services);
+    
   } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch bookings', details: err });
+    console.error('❌ Error getting services:', err);
+    res.status(500).json({ error: 'Failed to get services', details: err.message });
   }
 });
 
@@ -1107,7 +1248,7 @@ app.post('/signup', async (req, res) => {
   const { name, email, password } = req.body;
   try {
     // Prevent admin registration via signup
-    if (email === 'admin1234@gmail.com') {
+    if (email === 'j2mechanicslondon@gmail.com') {
       return res.status(403).json({ message: 'Cannot register as admin.' });
     }
     const existingUser = await User.findOne({ email });
@@ -1127,7 +1268,7 @@ app.post('/login', async (req, res) => {
   const { email, password } = req.body;
   try {
     // Admin hardcoded check
-    if (email === 'admin1234@gmail.com' && password === 'admin1234') {
+    if (email === 'j2mechanicslondon@gmail.com' && password === 'j2mechanicslondon') {
       console.log('🔍 Admin login attempt for:', email);
       
       // Check if admin exists in DB, if not, create
@@ -1853,51 +1994,78 @@ app.post('/api/contact', async (req, res) => {
   }
 });
 
-// Upload endpoint
+// NEW SIMPLIFIED UPLOAD ENDPOINT
 app.post('/upload-service-image', upload.array('images'), async (req, res) => {
   try {
-    console.log("🔄 Image upload request received");
+    console.log("🔄 NEW SIMPLIFIED UPLOAD - Image upload request received");
     console.log("📋 Request body:", req.body);
     console.log("📁 Files:", req.files ? req.files.length : 'No files');
     
-    const { userId, serviceId, customerEmail } = req.body;
+    const { serviceId } = req.body;
     
-    if (!userId || !serviceId || !req.files) {
-      console.log("❌ Missing required fields:", { userId, serviceId, hasFiles: !!req.files });
-      return res.status(400).json({ message: 'Missing required fields.' });
+    if (!serviceId || !req.files) {
+      console.log("❌ Missing required fields:", { serviceId, hasFiles: !!req.files });
+      return res.status(400).json({ message: 'Missing serviceId or files.' });
     }
     
-    // Use customer email if provided, otherwise use userId
-    const actualUserId = customerEmail || userId;
-    console.log("👤 Using user ID:", actualUserId);
-    console.log("🔧 Service ID:", serviceId);
+    // Simple validation: check if service exists
+    const carbooking = await Carbooking.findById(serviceId);
+    if (!carbooking) {
+      console.log("❌ Service not found:", serviceId);
+      return res.status(400).json({ message: 'Service not found.' });
+    }
     
+    console.log("✅ Service found:", {
+      id: carbooking._id,
+      car: carbooking.car.registration,
+      service: carbooking.service.label,
+      date: carbooking.date
+    });
+    
+    // Upload images directly to this service
     const imageDocs = req.files.map(file => ({
-      userId: actualUserId,
-      serviceId,
-      imageUrl: file.path
+      serviceId: serviceId,
+      userId: carbooking.customer.email, // Include customer email for proper association
+      imageUrl: file.url || file.path,
+      uploadedAt: new Date(),
+      uploadedBy: 'admin'
     }));
     
-    console.log("💾 Saving image documents:", imageDocs);
+    // Validate that we have the required fields
+    if (!carbooking.customer?.email) {
+      console.log("❌ No customer email found in booking");
+      return res.status(400).json({ message: 'Customer email not found in booking.' });
+    }
+    
+    console.log("💾 Saving images for service:", serviceId);
     await ServiceImage.insertMany(imageDocs);
     
-    console.log("✅ Images uploaded successfully");
-    res.status(200).json({ message: 'Images uploaded!', images: imageDocs });
+    console.log("✅ Images uploaded successfully for service:", serviceId);
+    res.status(200).json({ 
+      message: 'Images uploaded successfully!', 
+      images: imageDocs,
+      serviceId: serviceId
+    });
     
   } catch (err) {
     console.error('❌ UPLOAD ERROR:', err);
-    res.status(500).json({ message: 'Upload failed', error: err.message, stack: err.stack });
+    res.status(500).json({ message: 'Upload failed', error: err.message });
   }
 });
 
-// Get service images by service ID
+// SIMPLIFIED: Get images for a specific service
 app.get('/api/service-images/:serviceId', async (req, res) => {
   try {
     const { serviceId } = req.params;
+    console.log('🔍 SIMPLIFIED: Getting images for service:', serviceId);
+    
     const images = await ServiceImage.find({ serviceId }).sort({ uploadedAt: -1 });
+    console.log('📸 Found images:', images.length);
+    
     res.json(images);
   } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch service images', details: err.message });
+    console.error('❌ Error getting service images:', err);
+    res.status(500).json({ error: 'Failed to get service images', details: err.message });
   }
 });
 
@@ -1905,30 +2073,70 @@ app.get('/api/service-images/:serviceId', async (req, res) => {
 app.get('/api/user-services-with-images/:email', async (req, res) => {
   try {
     const { email } = req.params;
+    console.log('🔍 Fetching services with images for email:', email);
     
     // Get user services
     const userServices = await UserService.find({ 
       userEmail: { $regex: new RegExp(email, 'i') } 
     }).sort({ createdAt: -1 });
     
+    console.log('📦 Found user services:', userServices.length);
+    
     // Get images for each service by looking up the corresponding Carbooking
     const servicesWithImages = await Promise.all(
       userServices.map(async (service) => {
+        console.log('🔍 Processing service:', service._id, 'for car:', service.car?.registration);
+        
         // Find the corresponding Carbooking by matching car registration and customer email
+        // Use more flexible matching to ensure we find the right service
+        console.log('🔍 Looking for Carbooking with:', {
+          registration: service.car.registration,
+          email: email,
+          serviceLabel: service.service.label,
+          serviceDate: service.date
+        });
+        
         const carbooking = await Carbooking.findOne({
           'car.registration': service.car.registration,
           'customer.email': email,
-          'service.label': service.service.label,
-          date: service.date
+          // Remove strict date matching as it might cause issues with time zones
+          // Remove strict service label matching as it might have slight variations
         });
         
         let images = [];
         if (carbooking) {
+          console.log('✅ Found matching Carbooking:', carbooking._id);
           // Get images using the Carbooking ID
           images = await ServiceImage.find({ 
             serviceId: carbooking._id.toString(),
             userId: email 
           }).sort({ uploadedAt: -1 });
+          console.log('📸 Found images for this service:', images.length);
+        } else {
+          console.log('❌ No matching Carbooking found for service');
+          
+          // Try a more flexible search as fallback
+          console.log('🔍 Trying flexible search...');
+          const flexibleCarbooking = await Carbooking.findOne({
+            'car.registration': service.car.registration,
+            'customer.email': email
+          });
+          
+          if (flexibleCarbooking) {
+            console.log('✅ Found flexible match:', flexibleCarbooking._id);
+            // Get images using the flexible Carbooking ID
+            images = await ServiceImage.find({ 
+              serviceId: flexibleCarbooking._id.toString(),
+              userId: email 
+            }).sort({ uploadedAt: -1 });
+            console.log('📸 Found images with flexible search:', images.length);
+          } else {
+            console.log('❌ No flexible match found either');
+            // No fallback - only show images that are properly linked to this specific service
+            // This prevents images from appearing on wrong services
+            images = [];
+            console.log('🔍 No images found for this service (no matching Carbooking)');
+          }
         }
         
         return {
@@ -1938,8 +2146,11 @@ app.get('/api/user-services-with-images/:email', async (req, res) => {
       })
     );
     
+    console.log('✅ Returning services with images:', servicesWithImages.length);
     res.json(servicesWithImages);
+    
   } catch (err) {
+    console.error('❌ Error in user-services-with-images:', err);
     res.status(500).json({ error: 'Failed to fetch user services with images', details: err.message });
   }
 });
@@ -2052,7 +2263,7 @@ app.post('/api/create-admin', async (req, res) => {
     console.log('🔍 Request body:', { email, password: password ? '***' : 'missing' });
     
     // Only allow admin creation for specific credentials
-    if (email !== 'admin1234@gmail.com' || password !== 'admin1234') {
+    if (email !== 'j2mechanicslondon@gmail.com' || password !== 'j2mechanicslondon') {
       console.log('❌ Invalid credentials provided');
       return res.status(403).json({ error: 'Invalid admin credentials' });
     }
@@ -4070,10 +4281,10 @@ app.post('/api/bookings/:bookingId/messages', async (req, res) => {
           allAdmins.forEach(admin => console.log('  -', admin.email, admin.name, admin._id));
           
           // Try to create admin user if it's the expected admin email
-          if (senderEmail === 'admin1234@gmail.com') {
+          if (senderEmail === 'j2mechanicslondon@gmail.com') {
             console.log('🔍 Attempting to create admin user...');
             try {
-              const hashedPassword = await bcrypt.hash('admin1234', 10);
+              const hashedPassword = await bcrypt.hash('j2mechanicslondon', 10);
               adminUser = new User({ 
                 name: 'Admin Staff',
                 email: senderEmail, 
@@ -4703,5 +4914,531 @@ app.get('/api/test-message-system', async (req, res) => {
   }
 });
 
+// Save service images endpoint (for Vercel compatibility)
+app.post('/api/save-service-images', async (req, res) => {
+  try {
+    console.log("💾 Saving service images to database");
+    const { images } = req.body;
+    
+    if (!images || !Array.isArray(images)) {
+      return res.status(400).json({ message: 'Images array is required.' });
+    }
+    
+    const imageDocs = images.map(img => ({
+      userId: img.userId,
+      serviceId: img.serviceId,
+      imageUrl: img.imageUrl
+    }));
+    
+    console.log("💾 Saving image documents:", imageDocs);
+    await ServiceImage.insertMany(imageDocs);
+    
+    console.log("✅ Service images saved successfully");
+    res.status(200).json({ message: 'Service images saved!', images: imageDocs });
+    
+  } catch (err) {
+    console.error('❌ Save service images error:', err);
+    res.status(500).json({ message: 'Failed to save service images', error: err.message });
+  }
+});
+
+// Endpoint to fix image associations
+app.post('/api/fix-image-associations', async (req, res) => {
+  try {
+    console.log('🔧 Starting image association fix...');
+    
+    const result = await cleanupIncorrectlyAssociatedImages();
+    
+    res.json({ 
+      message: 'Image associations fixed successfully!',
+      result: result
+    });
+    
+  } catch (err) {
+    console.error('❌ Fix image associations error:', err);
+    res.status(500).json({ message: 'Failed to fix image associations', error: err.message });
+  }
+});
+
 // Export for Vercel deployment
 module.exports = app;
+
+// Test endpoint to verify backend is working
+app.get('/api/test', (req, res) => {
+  res.json({ 
+    message: 'Backend is working!', 
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development'
+  });
+});
+
+// Debug endpoint to list all service images
+app.get('/api/debug/service-images', async (req, res) => {
+  try {
+    console.log('🔍 Debug: Listing all service images');
+    
+    const images = await ServiceImage.find({}).sort({ uploadedAt: -1 });
+    
+    // Group images by serviceId to show duplicates
+    const imagesByService = {};
+    images.forEach(img => {
+      if (!imagesByService[img.serviceId]) {
+        imagesByService[img.serviceId] = img.userId || 'NO_USER_ID';
+      }
+    });
+    
+    // Find potential duplicates (same imageUrl across different services)
+    const imageUrlMap = {};
+    images.forEach(img => {
+      if (!imageUrlMap[img.imageUrl]) {
+        imageUrlMap[img.imageUrl] = [];
+      }
+      imageUrlMap[img.imageUrl].push(img);
+    });
+    
+    const duplicates = Object.entries(imageUrlMap).filter(([url, imgs]) => imgs.length > 1);
+    
+    // Get detailed information about each image's association
+    const detailedImages = await Promise.all(images.map(async (img) => {
+      const carbooking = await Carbooking.findById(img.serviceId);
+      return {
+        id: img._id,
+        serviceId: img.serviceId,
+        userId: img.userId,
+        imageUrl: img.imageUrl,
+        uploadedAt: img.uploadedAt,
+        carbooking: carbooking ? {
+          carRegistration: carbooking.car?.registration,
+          customerEmail: carbooking.customer?.email,
+          serviceLabel: carbooking.service?.label,
+          date: carbooking.date
+        } : null
+      };
+    }));
+    
+    res.json({
+      totalImages: images.length,
+      imagesByService: imagesByService,
+      potentialDuplicates: duplicates.map(([url, imgs]) => ({
+        imageUrl: url,
+        services: imgs.map(img => ({
+          id: img._id,
+          serviceId: img.serviceId,
+          userId: img.userId,
+          uploadedAt: img.uploadedAt
+        }))
+      })),
+      allImages: detailedImages
+    });
+    
+  } catch (err) {
+    console.error('❌ Debug endpoint error:', err);
+    res.status(500).json({ error: 'Debug endpoint failed', details: err.message });
+  }
+});
+
+// Get user services with images by email
+app.get('/api/user-services-with-images/:email', async (req, res) => {
+  try {
+    const { email } = req.params;
+    console.log('🔍 Fetching services with images for email:', email);
+    
+    // Get user services
+    const userServices = await UserService.find({ 
+      userEmail: { $regex: new RegExp(email, 'i') } 
+    }).sort({ createdAt: -1 });
+    
+    console.log('📦 Found user services:', userServices.length);
+    
+    // Get images for each service by looking up the corresponding Carbooking
+    const servicesWithImages = await Promise.all(
+      userServices.map(async (service) => {
+        console.log('🔍 Processing service:', service._id, 'for car:', service.car?.registration);
+        
+        // Find the corresponding Carbooking by matching car registration and customer email
+        const carbooking = await Carbooking.findOne({
+          'car.registration': service.car.registration,
+          'customer.email': email,
+          'service.label': service.service.label,
+          date: service.date
+        });
+        
+        let images = [];
+        if (carbooking) {
+          console.log('✅ Found matching Carbooking:', carbooking._id);
+          // Get images using the Carbooking ID
+          images = await ServiceImage.find({ 
+            serviceId: carbooking._id.toString(),
+            userId: email 
+          }).sort({ uploadedAt: -1 });
+          console.log('📸 Found images for this service:', images.length);
+        } else {
+          console.log('❌ No matching Carbooking found for service');
+          // Try alternative approach: look for images by service label and user
+          images = await ServiceImage.find({ 
+            userId: email 
+          }).sort({ uploadedAt: -1 });
+          console.log('🔍 Alternative search found images:', images.length);
+        }
+        
+        return {
+          ...service.toObject(),
+          images: images
+        };
+      })
+    );
+    
+    console.log('✅ Returning services with images:', servicesWithImages.length);
+    res.json(servicesWithImages);
+    
+  } catch (err) {
+    console.error('❌ Error in user-services-with-images:', err);
+    res.status(500).json({ error: 'Failed to fetch user services with images', details: err.message });
+  }
+});
+
+// Admin endpoint to search services with images
+app.get('/api/admin/search-services-with-images', async (req, res) => {
+  try {
+    const { email, registration, serviceLabel, date } = req.query;
+    console.log('🔍 Admin searching services with filters:', { email, registration, serviceLabel, date });
+    
+    // Build search query
+    let searchQuery = {};
+    
+    if (email) {
+      searchQuery['customer.email'] = { $regex: new RegExp(email, 'i') };
+    }
+    
+    if (registration) {
+      searchQuery['car.registration'] = { $regex: new RegExp(registration, 'i') };
+    }
+    
+    if (serviceLabel) {
+      searchQuery['service.label'] = { $regex: new RegExp(serviceLabel, 'i') };
+    }
+    
+    if (date) {
+      searchQuery.date = date;
+    }
+    
+    console.log('🔍 Search query:', searchQuery);
+    
+    // Find Carbookings matching the search criteria
+    const carbookings = await Carbooking.find(searchQuery)
+      .sort({ createdAt: -1 })
+      .limit(50); // Limit results
+    
+    console.log('📦 Found carbookings:', carbookings.length);
+    
+    // Get images for each carbooking
+    const servicesWithImages = await Promise.all(
+      carbookings.map(async (carbooking) => {
+        const images = await ServiceImage.find({ 
+          serviceId: carbooking._id.toString()
+        }).sort({ uploadedAt: -1 });
+        
+        return {
+          ...carbooking.toObject(),
+          images: images,
+          imageCount: images.length
+        };
+      })
+    );
+    
+    console.log('✅ Returning services with images:', servicesWithImages.length);
+    res.json({
+      count: servicesWithImages.length,
+      services: servicesWithImages
+    });
+    
+  } catch (err) {
+    console.error('❌ Admin search error:', err);
+    res.status(500).json({ error: 'Admin search failed', details: err.message });
+  }
+});
+
+// Test image upload endpoint
+app.post('/api/test-image-upload', upload.single('image'), async (req, res) => {
+  try {
+    console.log('🧪 Test image upload received');
+    console.log('📁 File:', req.file);
+    console.log('📋 Body:', req.body);
+    
+    if (!req.file) {
+      return res.status(400).json({ message: 'No image file provided' });
+    }
+    
+    res.json({ 
+      message: 'Test upload successful',
+      file: {
+        filename: req.file.filename,
+        path: req.file.path,
+        url: req.file.url,
+        size: req.file.size,
+        mimetype: req.file.mimetype
+      }
+    });
+    
+  } catch (err) {
+    console.error('❌ Test upload error:', err);
+    res.status(500).json({ error: 'Test upload failed', details: err.message });
+  }
+});
+
+// Manual cleanup endpoint for testing
+app.post('/api/cleanup-duplicate-images', async (req, res) => {
+  try {
+    console.log('🧹 Manual cleanup endpoint called');
+    await cleanupDuplicateImages();
+    res.status(200).json({ message: 'Duplicate image cleanup completed successfully' });
+  } catch (err) {
+    console.error('❌ Cleanup failed:', err);
+    res.status(500).json({ message: 'Cleanup failed', error: err.message });
+  }
+});
+
+// Fix existing UserService documents with missing labour information
+app.post('/api/fix-user-service-labour', async (req, res) => {
+  try {
+    console.log('🔧 Starting UserService labour information fix...');
+    
+    // Get all UserService documents
+    const userServices = await UserService.find({});
+    console.log('📋 Total UserServices found:', userServices.length);
+    
+    let updatedCount = 0;
+    
+    for (const userService of userServices) {
+      if (!userService.labourHours || !userService.labourCost) {
+        try {
+          const serviceLabel = userService.service?.label;
+          if (serviceLabel) {
+            // Look up the service definition
+            const serviceDefinition = await Service.findOne({ label: serviceLabel });
+            if (serviceDefinition && (serviceDefinition.labourHours || serviceDefinition.labourCost)) {
+              console.log('🔧 Updating UserService for service:', serviceLabel, {
+                oldLabourHours: userService.labourHours,
+                oldLabourCost: userService.labourCost,
+                newLabourHours: serviceDefinition.labourHours,
+                newLabourCost: serviceDefinition.labourCost
+              });
+              
+              // Update the UserService
+              await UserService.findByIdAndUpdate(userService._id, {
+                labourHours: serviceDefinition.labourHours || 0,
+                labourCost: serviceDefinition.labourCost || 0
+              });
+              
+              updatedCount++;
+            }
+          }
+        } catch (updateError) {
+          console.log('⚠️ Could not update UserService:', userService._id, updateError.message);
+        }
+      }
+    }
+    
+    console.log('✅ UserService labour fix completed. Updated:', updatedCount, 'documents');
+    res.json({ message: 'Labour information fix completed', updatedCount });
+  } catch (error) {
+    console.error('❌ Error during UserService labour fix:', error);
+    res.status(500).json({ error: 'Labour fix failed', details: error.message });
+  }
+});
+
+// Debug endpoint to check image linking
+app.get('/api/debug/image-linking/:serviceId', async (req, res) => {
+  try {
+    const { serviceId } = req.params;
+    console.log('🔍 Debug: Checking image linking for service:', serviceId);
+    
+    // Check if service exists
+    const carbooking = await Carbooking.findById(serviceId);
+    if (!carbooking) {
+      return res.status(404).json({ error: 'Service not found' });
+    }
+    
+    // Check for images
+    const images = await ServiceImage.find({ serviceId: serviceId.toString() });
+    
+    // Check for UserService
+    const userService = await UserService.findOne({
+      'car.registration': carbooking.car.registration,
+      'customer.email': carbooking.customer.email,
+      'service.label': carbooking.service.label,
+      date: carbooking.date
+    });
+    
+    res.json({
+      serviceId: serviceId,
+      carbooking: {
+        id: carbooking._id,
+        carRegistration: carbooking.car.registration,
+        customerEmail: carbooking.customer.email,
+        serviceLabel: carbooking.service.label,
+        date: carbooking.date,
+        status: carbooking.status
+      },
+      userService: userService ? {
+        id: userService._id,
+        carRegistration: userService.car.registration,
+        userEmail: userService.userEmail,
+        serviceLabel: userService.service.label,
+        date: userService.date
+      } : null,
+      images: {
+        count: images.length,
+        images: images.map(img => ({
+          id: img._id,
+          serviceId: img.serviceId,
+          userId: img.userId,
+          uploadedAt: img.uploadedAt
+        }))
+      },
+      linkingStatus: {
+        hasCarbooking: !!carbooking,
+        hasUserService: !!userService,
+        hasImages: images.length > 0,
+        imageServiceIdMatch: images.every(img => img.serviceId === serviceId.toString())
+      }
+    });
+    
+  } catch (err) {
+    console.error('❌ Debug endpoint error:', err);
+    res.status(500).json({ error: 'Debug endpoint failed', details: err.message });
+  }
+});
+
+// Admin endpoint to get services for adding images (filtered and validated)
+app.get('/api/admin/services-for-images', async (req, res) => {
+  try {
+    const { email, registration, serviceLabel, date, limit = 20 } = req.query;
+    console.log('🔍 Admin getting services for images with filters:', { email, registration, serviceLabel, date, limit });
+    
+    // Build search query - more restrictive for image uploads
+    let searchQuery = {};
+    
+    if (email) {
+      searchQuery['customer.email'] = { $regex: new RegExp(email, 'i') };
+    }
+    
+    if (registration) {
+      searchQuery['car.registration'] = { $regex: new RegExp(registration, 'i') };
+    }
+    
+    if (serviceLabel) {
+      searchQuery['service.label'] = { $regex: new RegExp(serviceLabel, 'i') };
+    }
+    
+    if (date) {
+      searchQuery.date = date;
+    }
+    
+    // Only show completed or in-progress services (not cancelled/failed)
+    searchQuery.status = { $in: ['completed', 'in-progress', 'pending'] };
+    
+    console.log('🔍 Services for images query:', searchQuery);
+    
+    // Find Carbookings matching the search criteria
+    const carbookings = await Carbooking.find(searchQuery)
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .select('_id customer car service date time status totalAmount');
+    
+    console.log('📦 Found carbookings for images:', carbookings.length);
+    
+    // Get image count for each service
+    const servicesWithImageCount = await Promise.all(
+      carbookings.map(async (carbooking) => {
+        const imageCount = await ServiceImage.countDocuments({ 
+          serviceId: carbooking._id.toString()
+        });
+        
+        return {
+          _id: carbooking._id,
+          customer: carbooking.customer,
+          car: carbooking.car,
+          service: carbooking.service,
+          date: carbooking.date,
+          time: carbooking.time,
+          status: carbooking.status,
+          totalAmount: carbooking.totalAmount,
+          imageCount: imageCount,
+          hasImages: imageCount > 0
+        };
+      })
+    );
+    
+    console.log('✅ Returning services for images:', servicesWithImageCount.length);
+    res.json({
+      count: servicesWithImageCount.length,
+      services: servicesWithImageCount
+    });
+    
+  } catch (err) {
+    console.error('❌ Admin services for images error:', err);
+    res.status(500).json({ error: 'Failed to get services for images', details: err.message });
+  }
+});
+
+// Admin endpoint to search services with images
+app.get('/api/admin/search-services-with-images', async (req, res) => {
+  try {
+    const { email, registration, serviceLabel, date } = req.query;
+    console.log('🔍 Admin searching services with filters:', { email, registration, serviceLabel, date });
+    
+    // Build search query
+    let searchQuery = {};
+    
+    if (email) {
+      searchQuery['customer.email'] = { $regex: new RegExp(email, 'i') };
+    }
+    
+    if (registration) {
+      searchQuery['car.registration'] = { $regex: new RegExp(registration, 'i') };
+    }
+    
+    if (serviceLabel) {
+      searchQuery['service.label'] = { $regex: new RegExp(serviceLabel, 'i') };
+    }
+    
+    if (date) {
+      searchQuery.date = date;
+    }
+    
+    console.log('🔍 Search query:', searchQuery);
+    
+    // Find Carbookings matching the search criteria
+    const carbookings = await Carbooking.find(searchQuery)
+      .sort({ createdAt: -1 })
+      .limit(50); // Limit results
+    
+    console.log('📦 Found carbookings:', carbookings.length);
+    
+    // Get images for each carbooking
+    const servicesWithImages = await Promise.all(
+      carbookings.map(async (carbooking) => {
+        const images = await ServiceImage.find({ 
+          serviceId: carbooking._id.toString()
+        }).sort({ uploadedAt: -1 });
+        
+        return {
+          ...carbooking.toObject(),
+          images: images,
+          imageCount: images.length
+        };
+      })
+    );
+    
+    console.log('✅ Returning services with images:', servicesWithImages.length);
+    res.json({
+      count: servicesWithImages.length,
+      services: servicesWithImages
+    });
+    
+  } catch (err) {
+    console.error('❌ Admin search error:', err);
+    res.status(500).json({ error: 'Admin search failed', details: err.message });
+  }
+});
