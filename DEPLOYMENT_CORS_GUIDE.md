@@ -32,6 +32,7 @@ ALLOW_ALL_ORIGINS=false
 - All origins allowed (for testing with Postman, etc.)
 
 **Production Mode:**
+- `https://workshop-frontend.vercel.app` (production)
 - `http://localhost:3000` (local development)
 - `http://127.0.0.1:3000` (local development)
 - `https://your-frontend-domain.com` (your deployed frontend)

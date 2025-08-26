@@ -32,7 +32,7 @@ const PORT = process.env.PORT || 5001;
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
-    user: 'aryanarshad5413@gmail.com',
+    user: 'j2mechanicslondon@gmail.com',
     pass: 'gvyqmapsqsrrtwjm',
   },
 });
@@ -360,7 +360,7 @@ const app = express();
 app.use(cors({
   origin: [
     'https://workshopfrontend-one.vercel.app',
-    'http://localhost:3000' // Keep localhost for development
+    'https://workshop-frontend.vercel.app' // Production frontend URL
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
@@ -378,7 +378,7 @@ app.use(cors({
 app.use(express.json());
 
 // MongoDB Connection String
-const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://ali:ali@cluster0.xkuanbt.mongodb.net/?retryWrites=true&w=majority"
+const MONGODB_URI = "mongodb+srv://ali:ali@cluster0.xkuanbt.mongodb.net/?retryWrites=true&w=majority"
 
 console.log('🔌 Attempting to connect to MongoDB...');
 console.log('🔌 Connection string:', MONGODB_URI.replace(/\/\/[^:]+:[^@]+@/, '//***:***@')); // Hide credentials in logs
@@ -460,7 +460,7 @@ async function connectToMongoDB() {
     // Start server after successful connection and setup
     app.listen(PORT, () => {
       console.log(`🚀 Server is running on port ${PORT}`);
-      console.log(`🌐 Server URL: http://localhost:${PORT}`);
+      console.log(`🌐 Server URL: http://localhost:${PORT} (or production URL when deployed)`);
     });
     
     return true;
@@ -1335,7 +1335,7 @@ app.post('/api/forgot-password', async (req, res) => {
     await resetTokenDoc.save();
 
     // Create reset link
-    const resetLink = `http://localhost:3000/reset-password?token=${resetToken}`;
+    const resetLink = `https://workshop-frontend.vercel.app/reset-password?token=${resetToken}`;
     
     // Send email with reset link
     const mailOptions = {
@@ -1613,7 +1613,7 @@ app.post('/api/reset-password', async (req, res) => {
                 </p>
                 
                 <div style="text-align: center;">
-                  <a href="http://localhost:3000/login" class="login-button">
+                  <a href="https://workshop-frontend.vercel.app/login" class="login-button">
                     Login Now
                   </a>
                 </div>
@@ -1828,7 +1828,7 @@ app.post('/api/contact', async (req, res) => {
                 <a href="mailto:${email}" class="btn">
                   Reply to ${name}
                 </a>
-                <a href="http://localhost:3000/dashboard" class="btn">
+                <a href="https://workshop-frontend.vercel.app/dashboard" class="btn">
                   Go to Dashboard
                 </a>
               </div>
@@ -2174,7 +2174,7 @@ app.post('/api/dvla-lookup', async (req, res) => {
     const response = await fetch('https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles', {
       method: 'POST',
       headers: {
-        'x-api-key': process.env.DVLA_API_KEY || 'GkkoAz3nZ21HAAz7qC8Cda4CrKLfVONB1yv1FAGJ', // Use environment variable or fallback
+        'x-api-key': 'GkkoAz3nZ21HAAz7qC8Cda4CrKLfVONB1yv1FAGJ', // Hardcoded API key
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ registrationNumber }),
@@ -2552,7 +2552,7 @@ app.post('/api/create-checkout-session', async (req, res) => {
 // Stripe webhook to handle successful payments
 app.post('/api/stripe-webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
-  const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET || 'whsec_your_webhook_secret_here';
+  const endpointSecret = 'whsec_your_webhook_secret_here';
 
   let event;
 
@@ -4353,7 +4353,7 @@ app.post('/api/bookings/:bookingId/messages', async (req, res) => {
       recipientName = booking.customer.name;
     } else {
       // Customer is sending, notify admin
-      recipientEmail = 'aryanarshad5413@gmail.com'; // Default admin email
+      recipientEmail = 'j2mechanicslondon@gmail.com'; // Default admin email
       recipientName = 'Admin Staff';
     }
     
@@ -4564,7 +4564,7 @@ app.post('/api/test-email-reply', async (req, res) => {
     console.log('🧪 Testing email reply:', { bookingId, customerEmail, message, customerName });
     
     // Call the actual email reply endpoint
-    const response = await fetch(`http://localhost:5001/api/email-reply`, {
+    const response = await fetch(`https://workshop-backend-six.vercel.app/api/email-reply`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ bookingId, customerEmail, message, customerName })
@@ -4968,7 +4968,7 @@ app.get('/api/test', (req, res) => {
   res.json({ 
     message: 'Backend is working!', 
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
+    environment: 'production'
   });
 });
 

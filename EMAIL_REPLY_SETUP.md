@@ -15,10 +15,10 @@ This system allows customers to reply to messages via email, and their replies a
 Use a Gmail account to catch replies and POST them to your backend automatically.
 
 1. Go to `script.google.com` and create a new Apps Script project.
-2. Paste the following code and replace `BACKEND_URL` with your URL, e.g. `http://localhost:5001/api/email-reply`.
+2. Paste the following code and replace `BACKEND_URL` with your URL, e.g. `https://workshop-backend-six.vercel.app/api/email-reply`.
 
 ```javascript
-const BACKEND_URL = 'http://localhost:5001/api/email-reply';
+const BACKEND_URL = 'https://workshop-backend-six.vercel.app/api/email-reply';
 
 function processReplies() {
   const threads = GmailApp.search('label:inbox newer_than:1d');
@@ -92,7 +92,7 @@ Content-Type: application/json
 ## Testing
 You can test the endpoint using curl:
 ```bash
-curl -X POST http://localhost:5001/api/email-reply \
+curl -X POST https://workshop-backend-six.vercel.app/api/email-reply \
   -H "Content-Type: application/json" \
   -d '{
     "bookingId": "your_booking_id",
