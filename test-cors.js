@@ -2,7 +2,7 @@ const fetch = require('node-fetch');
 
 // Test CORS configuration
 async function testCORS() {
-  const baseURL = process.env.BACKEND_URL || 'https://workshop-backend-six.vercel.app';
+  const baseURL = process.env.BACKEND_URL || 'http://localhost:5001';
   
   console.log('🧪 Testing CORS configuration...');
   console.log(`📍 Backend URL: ${baseURL}`);

@@ -32,7 +32,7 @@ const PORT = process.env.PORT || 5001;
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
-    user: 'j2mechanicslondon@gmail.com',
+    user: 'aryanarshad5413@gmail.com',
     pass: 'gvyqmapsqsrrtwjm',
   },
 });
@@ -360,7 +360,7 @@ const app = express();
 app.use(cors({
   origin: [
     'https://workshopfrontend-one.vercel.app',
-    'https://workshop-frontend.vercel.app' // Production frontend URL
+    'http://localhost:3000' // Keep localhost for development
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
@@ -378,7 +378,7 @@ app.use(cors({
 app.use(express.json());
 
 // MongoDB Connection String
-const MONGODB_URI = "mongodb+srv://ali:ali@cluster0.xkuanbt.mongodb.net/?retryWrites=true&w=majority"
+const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://ali:ali@cluster0.xkuanbt.mongodb.net/?retryWrites=true&w=majority"
 
 console.log('🔌 Attempting to connect to MongoDB...');
 console.log('🔌 Connection string:', MONGODB_URI.replace(/\/\/[^:]+:[^@]+@/, '//***:***@')); // Hide credentials in logs
@@ -460,7 +460,7 @@ async function connectToMongoDB() {
     // Start server after successful connection and setup
     app.listen(PORT, () => {
       console.log(`🚀 Server is running on port ${PORT}`);
-      console.log(`🌐 Server URL: http://localhost:${PORT} (or production URL when deployed)`);
+      console.log(`🌐 Server URL: http://localhost:${PORT}`);
     });
     
     return true;
@@ -684,6 +684,16 @@ const bookingSchema = new mongoose.Schema({
     description: String,
     price: Number,
   },
+  services: [
+    {
+      label: String,
+      sub: String,
+      description: String,
+      price: Number,
+      labourHours: Number,
+      labourCost: Number,
+    }
+  ],
   parts: [
     {
       partNumber: String,
@@ -1054,13 +1064,459 @@ app.delete('/api/services/:id', async (req, res) => {
   }
 });
 
+// Finance API endpoints
+app.get('/api/finance/chart', async (req, res) => {
+  try {
+    const { period = 'month' } = req.query;
+    const data = [];
+    const now = new Date();
+    let startDate, endDate, groupFormat;
+
+    // Calculate date range and grouping based on period
+    switch (period) {
+      case 'day':
+        startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000); // Last 30 days
+        endDate = now;
+        groupFormat = '%Y-%m-%d';
+        break;
+      case 'week':
+        startDate = new Date(now.getTime() - 12 * 7 * 24 * 60 * 60 * 1000); // Last 12 weeks
+        endDate = now;
+        groupFormat = '%Y-W%U';
+        break;
+      case 'year':
+        startDate = new Date(now.getFullYear() - 5, 0, 1); // Last 5 years
+        endDate = now;
+        groupFormat = '%Y';
+        break;
+      default: // month
+        startDate = new Date(now.getFullYear(), now.getMonth() - 12, 1); // Last 12 months
+        endDate = now;
+        groupFormat = '%Y-%m';
+    }
+
+    // Aggregate bookings data for revenue
+    const revenueData = await Carbooking.aggregate([
+      {
+        $match: {
+          date: { $gte: startDate, $lte: endDate },
+          paymentStatus: 'paid'
+        }
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: groupFormat, date: '$date' } },
+          revenue: { $sum: '$total' }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+
+    // Calculate booking expenses (parts + labour)
+    const bookingExpenseData = await Carbooking.aggregate([
+      {
+        $match: {
+          date: { $gte: startDate, $lte: endDate },
+          paymentStatus: 'paid'
+        }
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: groupFormat, date: '$date' } },
+          totalLabourCost: { $sum: '$labourCost' },
+          totalPartsCost: { $sum: '$partsCost' },
+          bookingExpenses: { $sum: { $add: ['$labourCost', '$partsCost'] } }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+
+    // Calculate business expenses (equipment, fuel, etc.)
+    const businessExpenseData = await BusinessExpense.aggregate([
+      {
+        $match: {
+          date: { $gte: startDate, $lte: endDate }
+        }
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: groupFormat, date: '$date' } },
+          businessExpenses: { $sum: '$amount' }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+
+    // Combine revenue and expense data
+    const chartData = revenueData.map(revItem => {
+      const bookingExpItem = bookingExpenseData.find(exp => exp._id === revItem._id);
+      const businessExpItem = businessExpenseData.find(exp => exp._id === revItem._id);
+      
+      const revenue = revItem.revenue || 0;
+      const bookingExpenses = bookingExpItem ? bookingExpItem.bookingExpenses || 0 : 0;
+      const businessExpenses = businessExpItem ? businessExpItem.businessExpenses || 0 : 0;
+      const totalExpenses = bookingExpenses + businessExpenses;
+      
+      return {
+        date: revItem._id,
+        revenue,
+        expenses: totalExpenses,
+        profit: revenue - totalExpenses
+      };
+    });
+
+    res.json({ success: true, data: chartData });
+  } catch (error) {
+    console.error('Finance chart API error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/finance/summary', async (req, res) => {
+  try {
+    const { period = 'month' } = req.query;
+    const now = new Date();
+    let startDate;
+
+    // Calculate date range based on period
+    switch (period) {
+      case 'day':
+        startDate = new Date(now.getTime() - 24 * 60 * 60 * 1000); // Last day
+        break;
+      case 'week':
+        startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000); // Last week
+        break;
+      case 'year':
+        startDate = new Date(now.getFullYear(), 0, 1); // This year
+        break;
+      default: // month
+        startDate = new Date(now.getFullYear(), now.getMonth(), 1); // This month
+    }
+
+    // Calculate total revenue
+    const revenueResult = await Carbooking.aggregate([
+      {
+        $match: {
+          date: { $gte: startDate, $lte: now },
+          paymentStatus: 'paid'
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalRevenue: { $sum: '$total' }
+        }
+      }
+    ]);
+
+    // Calculate booking expenses (parts + labour)
+    const bookingExpenseResult = await Carbooking.aggregate([
+      {
+        $match: {
+          date: { $gte: startDate, $lte: now },
+          paymentStatus: 'paid'
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalLabourCost: { $sum: '$labourCost' },
+          totalPartsCost: { $sum: '$partsCost' },
+          bookingExpenses: { $sum: { $add: ['$labourCost', '$partsCost'] } }
+        }
+      }
+    ]);
+
+    // Calculate business expenses
+    const businessExpenseResult = await BusinessExpense.aggregate([
+      {
+        $match: {
+          date: { $gte: startDate, $lte: now }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          businessExpenses: { $sum: '$amount' }
+        }
+      }
+    ]);
+
+    const totalRevenue = revenueResult.length > 0 ? revenueResult[0].totalRevenue : 0;
+    const bookingExpenses = bookingExpenseResult.length > 0 ? bookingExpenseResult[0].bookingExpenses : 0;
+    const businessExpenses = businessExpenseResult.length > 0 ? businessExpenseResult[0].businessExpenses : 0;
+    const totalExpenses = bookingExpenses + businessExpenses;
+    const netProfit = totalRevenue - totalExpenses;
+    const profitMargin = totalRevenue > 0 ? (netProfit / totalRevenue) * 100 : 0;
+
+    res.json({
+      success: true,
+      data: {
+        totalRevenue,
+        totalExpenses,
+        netProfit,
+        profitMargin
+      }
+    });
+  } catch (error) {
+    console.error('Finance summary API error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/finance/breakdown', async (req, res) => {
+  try {
+    const { period = 'month' } = req.query;
+    const now = new Date();
+    let startDate;
+
+    // Calculate date range based on period
+    switch (period) {
+      case 'day':
+        startDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        break;
+      case 'week':
+        startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        break;
+      case 'year':
+        startDate = new Date(now.getFullYear(), 0, 1);
+        break;
+      default: // month
+        startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+    }
+
+    // Get revenue breakdown by category
+    const revenueBreakdown = await Carbooking.aggregate([
+      {
+        $match: {
+          date: { $gte: startDate, $lte: now },
+          paymentStatus: 'paid'
+        }
+      },
+      {
+        $group: {
+          _id: '$category',
+          amount: { $sum: '$total' }
+        }
+      }
+    ]);
+
+    const totalRevenue = revenueBreakdown.reduce((sum, item) => sum + item.amount, 0);
+
+    // Format revenue categories
+    const revenueCategories = revenueBreakdown.map(item => ({
+      name: item._id === 'tyres' ? 'Tyre Services' :
+            item._id === 'mechanical' ? 'Mechanical Services' :
+            item._id === 'service' ? 'General Services' :
+            item._id || 'Other Services',
+      amount: item.amount,
+      percentage: totalRevenue > 0 ? (item.amount / totalRevenue) * 100 : 0
+    })).sort((a, b) => b.amount - a.amount);
+
+    // Calculate real expense breakdown from bookings
+    const expenseBreakdown = await Carbooking.aggregate([
+      {
+        $match: {
+          date: { $gte: startDate, $lte: now },
+          paymentStatus: 'paid'
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalLabourCost: { $sum: '$labourCost' },
+          totalPartsCost: { $sum: '$partsCost' },
+          totalExpenses: { $sum: { $add: ['$labourCost', '$partsCost'] } }
+        }
+      }
+    ]);
+
+    const expenseData = expenseBreakdown.length > 0 ? expenseBreakdown[0] : { totalLabourCost: 0, totalPartsCost: 0, totalExpenses: 0 };
+    const totalExpenses = expenseData.totalExpenses || 0;
+
+    // Get business expenses for the period
+    const businessExpenses = await BusinessExpense.aggregate([
+      {
+        $match: {
+          date: { $gte: startDate, $lte: now }
+        }
+      },
+      {
+        $group: {
+          _id: '$category',
+          amount: { $sum: '$amount' }
+        }
+      }
+    ]);
+
+    // Combine booking expenses with business expenses
+    let expenseCategories = [
+      { 
+        name: 'Parts & Components', 
+        amount: expenseData.totalPartsCost || 0, 
+        percentage: 0
+      },
+      { 
+        name: 'Labour Costs', 
+        amount: expenseData.totalLabourCost || 0, 
+        percentage: 0
+      }
+    ];
+
+    // Add business expense categories
+    const businessExpenseMap = {
+      'equipment': 'Equipment & Tools',
+      'tools': 'Equipment & Tools',
+      'fuel': 'Fuel & Transport',
+      'transport': 'Fuel & Transport',
+      'marketing': 'Marketing',
+      'insurance': 'Insurance',
+      'utilities': 'Utilities',
+      'rent': 'Rent & Facilities',
+      'maintenance': 'Equipment Maintenance',
+      'supplies': 'Office & Supplies',
+      'other': 'Other Expenses'
+    };
+
+    businessExpenses.forEach(expense => {
+      const categoryName = businessExpenseMap[expense._id] || 'Other Expenses';
+      const existingCategory = expenseCategories.find(cat => cat.name === categoryName);
+      
+      if (existingCategory) {
+        existingCategory.amount += expense.amount;
+      } else {
+        expenseCategories.push({
+          name: categoryName,
+          amount: expense.amount,
+          percentage: 0
+        });
+      }
+    });
+
+    // Calculate total and percentages
+    const totalExpensesWithBusiness = expenseCategories.reduce((sum, cat) => sum + cat.amount, 0);
+    expenseCategories = expenseCategories
+      .map(cat => ({
+        ...cat,
+        percentage: totalExpensesWithBusiness > 0 ? (cat.amount / totalExpensesWithBusiness) * 100 : 0
+      }))
+      .filter(cat => cat.amount > 0)
+      .sort((a, b) => b.amount - a.amount);
+
+    res.json({
+      success: true,
+      data: {
+        revenue: revenueCategories,
+        expenses: expenseCategories
+      }
+    });
+  } catch (error) {
+    console.error('Finance breakdown API error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Business Expense Management API endpoints
+
+// GET /api/business-expenses - Get all business expenses
+app.get('/api/business-expenses', async (req, res) => {
+  try {
+    const { startDate, endDate, category } = req.query;
+    let query = {};
+    
+    if (startDate && endDate) {
+      query.date = { $gte: new Date(startDate), $lte: new Date(endDate) };
+    }
+    
+    if (category && category !== 'all') {
+      query.category = category;
+    }
+    
+    const expenses = await BusinessExpense.find(query).sort({ date: -1, createdAt: -1 });
+    res.json({ success: true, data: expenses });
+  } catch (error) {
+    console.error('Error fetching business expenses:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /api/business-expenses - Create new business expense
+app.post('/api/business-expenses', async (req, res) => {
+  try {
+    const expense = new BusinessExpense(req.body);
+    await expense.save();
+    res.json({ success: true, data: expense });
+  } catch (error) {
+    console.error('Error creating business expense:', error);
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+// PUT /api/business-expenses/:id - Update business expense
+app.put('/api/business-expenses/:id', async (req, res) => {
+  try {
+    const expense = await BusinessExpense.findByIdAndUpdate(
+      req.params.id, 
+      req.body, 
+      { new: true, runValidators: true }
+    );
+    if (!expense) {
+      return res.status(404).json({ success: false, error: 'Expense not found' });
+    }
+    res.json({ success: true, data: expense });
+  } catch (error) {
+    console.error('Error updating business expense:', error);
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+// DELETE /api/business-expenses/:id - Delete business expense
+app.delete('/api/business-expenses/:id', async (req, res) => {
+  try {
+    const expense = await BusinessExpense.findByIdAndDelete(req.params.id);
+    if (!expense) {
+      return res.status(404).json({ success: false, error: 'Expense not found' });
+    }
+    res.json({ success: true, message: 'Expense deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting business expense:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /api/business-expenses/categories - Get expense categories for dropdown
+app.get('/api/business-expenses/categories', (req, res) => {
+  const categories = [
+    { value: 'equipment', label: 'Equipment & Tools' },
+    { value: 'fuel', label: 'Fuel & Transport' },
+    { value: 'marketing', label: 'Marketing' },
+    { value: 'insurance', label: 'Insurance' },
+    { value: 'utilities', label: 'Utilities' },
+    { value: 'rent', label: 'Rent & Facilities' },
+    { value: 'maintenance', label: 'Equipment Maintenance' },
+    { value: 'supplies', label: 'Office & Supplies' },
+    { value: 'other', label: 'Other Expenses' }
+  ];
+  res.json({ success: true, data: categories });
+});
+
 // POST /api/bookings - Save a new booking
 app.post('/api/bookings', async (req, res) => {
   try {
     console.log('📅 Creating booking with date:', req.body.date, 'type:', typeof req.body.date);
+    console.log('🔧 Services data received:', {
+      singleService: req.body.service,
+      multipleServices: req.body.services,
+      servicesCount: req.body.services ? req.body.services.length : 0
+    });
+    
     const booking = new Carbooking(req.body);
     await booking.save();
     console.log('📅 Booking saved with ID:', booking._id, 'stored date:', booking.date, 'type:', typeof booking.date);
+    console.log('✅ Services saved:', {
+      single: booking.service?.label,
+      multiple: booking.services?.map(s => s.label) || []
+    });
     
     // Also save to user services tracking if customer email exists
     if (req.body.customer && req.body.customer.email) {
@@ -1098,6 +1554,7 @@ app.post('/api/bookings', async (req, res) => {
         userName: req.body.customer.name || 'Unknown',
         car: req.body.car,
         service: req.body.service,
+        services: req.body.services, // Add multiple services support
         parts: req.body.parts,
         labourHours: labourHours,
         labourCost: labourCost,
@@ -1335,7 +1792,7 @@ app.post('/api/forgot-password', async (req, res) => {
     await resetTokenDoc.save();
 
     // Create reset link
-    const resetLink = `https://workshop-frontend.vercel.app/reset-password?token=${resetToken}`;
+    const resetLink = `http://localhost:3000/reset-password?token=${resetToken}`;
     
     // Send email with reset link
     const mailOptions = {
@@ -1613,7 +2070,7 @@ app.post('/api/reset-password', async (req, res) => {
                 </p>
                 
                 <div style="text-align: center;">
-                  <a href="https://workshop-frontend.vercel.app/login" class="login-button">
+                  <a href="http://localhost:3000/login" class="login-button">
                     Login Now
                   </a>
                 </div>
@@ -1828,7 +2285,7 @@ app.post('/api/contact', async (req, res) => {
                 <a href="mailto:${email}" class="btn">
                   Reply to ${name}
                 </a>
-                <a href="https://workshop-frontend.vercel.app/dashboard" class="btn">
+                <a href="http://localhost:3000/dashboard" class="btn">
                   Go to Dashboard
                 </a>
               </div>
@@ -2174,7 +2631,7 @@ app.post('/api/dvla-lookup', async (req, res) => {
     const response = await fetch('https://driver-vehicle-licensing.api.gov.uk/vehicle-enquiry/v1/vehicles', {
       method: 'POST',
       headers: {
-        'x-api-key': 'GkkoAz3nZ21HAAz7qC8Cda4CrKLfVONB1yv1FAGJ', // Hardcoded API key
+        'x-api-key': process.env.DVLA_API_KEY || 'GkkoAz3nZ21HAAz7qC8Cda4CrKLfVONB1yv1FAGJ', // Use environment variable or fallback
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ registrationNumber }),
@@ -2225,6 +2682,16 @@ const userServiceSchema = new mongoose.Schema({
     category: String,
     price: Number,
   },
+  services: [
+    {
+      label: String,
+      sub: String,
+      category: String,
+      price: Number,
+      labourHours: Number,
+      labourCost: Number,
+    }
+  ],
   parts: [
     {
       partNumber: String,
@@ -2252,6 +2719,30 @@ const userServiceSchema = new mongoose.Schema({
   strict: false // Allow additional fields to be added
 });
 const UserService = mongoose.model('UserService', userServiceSchema);
+
+// Business Expense schema for non-booking expenses
+const businessExpenseSchema = new mongoose.Schema({
+  category: { 
+    type: String, 
+    required: true,
+    enum: ['equipment', 'tools', 'fuel', 'transport', 'marketing', 'insurance', 'utilities', 'rent', 'maintenance', 'supplies', 'other']
+  },
+  description: { type: String, required: true },
+  amount: { type: Number, required: true },
+  date: { type: Date, required: true },
+  paymentMethod: { type: String, enum: ['cash', 'card', 'bank_transfer', 'cheque'], default: 'card' },
+  supplier: String,
+  receiptUrl: String, // For uploading receipts
+  notes: String,
+  createdBy: { type: String, default: 'admin' },
+  createdAt: { type: Date, default: Date.now }
+});
+
+// Index for efficient querying
+businessExpenseSchema.index({ date: 1, category: 1 });
+businessExpenseSchema.index({ category: 1, createdAt: -1 });
+
+const BusinessExpense = mongoose.model('BusinessExpense', businessExpenseSchema);
 
 // Index creation will be handled after MongoDB connection is established
 
@@ -2552,7 +3043,7 @@ app.post('/api/create-checkout-session', async (req, res) => {
 // Stripe webhook to handle successful payments
 app.post('/api/stripe-webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
-  const endpointSecret = 'whsec_your_webhook_secret_here';
+  const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET || 'whsec_your_webhook_secret_here';
 
   let event;
 
@@ -4353,7 +4844,7 @@ app.post('/api/bookings/:bookingId/messages', async (req, res) => {
       recipientName = booking.customer.name;
     } else {
       // Customer is sending, notify admin
-      recipientEmail = 'j2mechanicslondon@gmail.com'; // Default admin email
+      recipientEmail = 'aryanarshad5413@gmail.com'; // Default admin email
       recipientName = 'Admin Staff';
     }
     
@@ -4564,7 +5055,7 @@ app.post('/api/test-email-reply', async (req, res) => {
     console.log('🧪 Testing email reply:', { bookingId, customerEmail, message, customerName });
     
     // Call the actual email reply endpoint
-    const response = await fetch(`https://workshop-backend-six.vercel.app/api/email-reply`, {
+    const response = await fetch(`http://localhost:5001/api/email-reply`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ bookingId, customerEmail, message, customerName })
@@ -4968,7 +5459,7 @@ app.get('/api/test', (req, res) => {
   res.json({ 
     message: 'Backend is working!', 
     timestamp: new Date().toISOString(),
-    environment: 'production'
+    environment: process.env.NODE_ENV || 'development'
   });
 });
 

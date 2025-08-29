@@ -10,7 +10,7 @@ cloudinary.config({
 const storage = new CloudinaryStorage({
   cloudinary,
   params: {
-    folder: 'newsImages',
+    folder: 'serviceImages',
     allowed_formats: ['jpg', 'jpeg', 'png'],
     transformation: [
       { width: 500, height: 600, crop: 'fill', gravity: 'auto' }
