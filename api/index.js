@@ -377,6 +377,25 @@ app.use(cors({
 
 app.use(express.json());
 
+// Health check endpoint
+app.get('/', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    message: 'Workshop Backend is running!',
+    timestamp: new Date().toISOString(),
+    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
+  });
+});
+
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    message: 'Health check passed',
+    timestamp: new Date().toISOString(),
+    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
+  });
+});
+
 // MongoDB Connection String
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://ali:ali@cluster0.xkuanbt.mongodb.net/?retryWrites=true&w=majority"
 
@@ -458,10 +477,15 @@ async function connectToMongoDB() {
     }
     
     // Start server after successful connection and setup
-    app.listen(PORT, () => {
-      console.log(`🚀 Server is running on port ${PORT}`);
-      console.log(`🌐 Server URL: http://localhost:${PORT}`);
-    });
+    if (process.env.NODE_ENV !== 'production') {
+      // Only start listening in development (not on Vercel)
+      app.listen(PORT, () => {
+        console.log(`🚀 Server is running on port ${PORT}`);
+        console.log(`🌐 Server URL: http://localhost:${PORT}`);
+      });
+    } else {
+      console.log(`🚀 Server is ready for Vercel deployment`);
+    }
     
     return true;
     
@@ -1747,7 +1771,7 @@ app.post('/login', async (req, res) => {
         console.log('✅ Admin user already exists:', admin._id);
       }
       
-      const token = jwt.sign({ id: admin._id, role: 'admin' }, 'your_jwt_secret', { expiresIn: '1d' });
+      const token = jwt.sign({ id: admin._id, role: 'admin' }, process.env.JWT_SECRET || 'fallback_jwt_secret_for_development', { expiresIn: '1d' });
       console.log('✅ Admin login successful, token generated for user:', admin._id);
       return res.json({ token, role: 'admin' });
     }
@@ -1759,7 +1783,7 @@ app.post('/login', async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ message: 'Invalid credentials' });
 
-    const token = jwt.sign({ id: user._id, role: user.role }, 'your_jwt_secret', { expiresIn: '1d' });
+    const token = jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET || 'fallback_jwt_secret_for_development', { expiresIn: '1d' });
     res.json({ token, role: user.role });
   } catch (err) {
     console.error('❌ Login error:', err);
@@ -2787,7 +2811,7 @@ app.post('/api/create-admin', async (req, res) => {
     
     console.log('🔍 Generating JWT token...');
     // Generate token
-    const token = jwt.sign({ id: admin._id, role: 'admin' }, 'your_jwt_secret', { expiresIn: '1d' });
+            const token = jwt.sign({ id: admin._id, role: 'admin' }, process.env.JWT_SECRET || 'fallback_jwt_secret_for_development', { expiresIn: '1d' });
     console.log('✅ JWT token generated');
     
     console.log('✅ Admin user ready, sending response');
@@ -2822,7 +2846,7 @@ app.get('/api/current-user', async (req, res) => {
     const token = authHeader.substring(7);
     console.log('🔍 Token extracted, length:', token.length);
     
-    const decoded = jwt.verify(token, 'your_jwt_secret');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_jwt_secret_for_development');
     console.log('🔍 Token decoded:', { id: decoded.id, role: decoded.role });
     
     const user = await User.findById(decoded.id).select('-password');
@@ -5933,3 +5957,9 @@ app.get('/api/admin/search-services-with-images', async (req, res) => {
     res.status(500).json({ error: 'Admin search failed', details: err.message });
   }
 });
+
+// Initialize MongoDB connection
+connectToMongoDB().catch(console.error);
+
+// Export for Vercel
+module.exports = app;
